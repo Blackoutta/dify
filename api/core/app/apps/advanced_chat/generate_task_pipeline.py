@@ -51,14 +51,17 @@ from core.app.entities.queue_entities import (
 )
 from core.app.entities.task_entities import (
     ChatbotAppBlockingResponse,
+    ChatbotAppPausedBlockingResponse,
     ChatbotAppStreamResponse,
     ErrorStreamResponse,
+    HumanInputRequiredResponse,
     MessageAudioEndStreamResponse,
     MessageAudioStreamResponse,
     MessageEndStreamResponse,
     PingStreamResponse,
     StreamResponse,
     WorkflowTaskState,
+    WorkflowPauseStreamResponse,
 )
 from core.app.task_pipeline.based_generate_task_pipeline import BasedGenerateTaskPipeline
 from core.app.task_pipeline.message_cycle_manager import MessageCycleManager
@@ -159,7 +162,13 @@ class AdvancedChatAppGenerateTaskPipeline(GraphRuntimeStateSupport):
         if message.status == MessageStatus.PAUSED and message.answer:
             self._task_state.answer = message.answer
 
-    def process(self) -> Union[ChatbotAppBlockingResponse, Generator[ChatbotAppStreamResponse, None, None]]:
+    def process(
+        self,
+    ) -> Union[
+        ChatbotAppBlockingResponse,
+        ChatbotAppPausedBlockingResponse,
+        Generator[ChatbotAppStreamResponse, None, None],
+    ]:
         """
         Process generate task pipeline.
         :return:
@@ -175,14 +184,40 @@ class AdvancedChatAppGenerateTaskPipeline(GraphRuntimeStateSupport):
         else:
             return self._to_blocking_response(generator)
 
-    def _to_blocking_response(self, generator: Generator[StreamResponse, None, None]) -> ChatbotAppBlockingResponse:
+    def _to_blocking_response(
+        self, generator: Generator[StreamResponse, None, None]
+    ) -> Union[ChatbotAppBlockingResponse, ChatbotAppPausedBlockingResponse]:
         """
         Process blocking response.
         :return:
         """
+        human_input_forms: list[HumanInputRequiredResponse.Data] = []
         for stream_response in generator:
             if isinstance(stream_response, ErrorStreamResponse):
                 raise stream_response.err
+            elif isinstance(stream_response, HumanInputRequiredResponse):
+                human_input_forms.append(stream_response.data)
+            elif isinstance(stream_response, WorkflowPauseStreamResponse):
+                return ChatbotAppPausedBlockingResponse(
+                    task_id=stream_response.task_id,
+                    data=ChatbotAppPausedBlockingResponse.Data(
+                        id=self._message_id,
+                        mode=self._conversation_mode,
+                        conversation_id=self._conversation_id,
+                        message_id=self._message_id,
+                        workflow_run_id=stream_response.data.workflow_run_id,
+                        answer=self._task_state.answer,
+                        metadata=self._message_end_to_stream_response().metadata,
+                        created_at=self._message_created_at,
+                        paused_nodes=stream_response.data.paused_nodes,
+                        reasons=stream_response.data.reasons,
+                        human_input_forms=human_input_forms,
+                        status=stream_response.data.status,
+                        elapsed_time=stream_response.data.elapsed_time,
+                        total_tokens=stream_response.data.total_tokens,
+                        total_steps=stream_response.data.total_steps,
+                    ),
+                )
             elif isinstance(stream_response, MessageEndStreamResponse):
                 extras = {}
                 if stream_response.metadata:

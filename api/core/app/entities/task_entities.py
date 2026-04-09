@@ -774,6 +774,35 @@ class ChatbotAppBlockingResponse(AppBlockingResponse):
     data: Data
 
 
+class ChatbotAppPausedBlockingResponse(AppBlockingResponse):
+    """
+    ChatbotAppPausedBlockingResponse entity
+    """
+
+    class Data(BaseModel):
+        """
+        Data entity
+        """
+
+        id: str
+        mode: str
+        conversation_id: str
+        message_id: str
+        workflow_run_id: str
+        answer: str
+        metadata: Mapping[str, object] = Field(default_factory=dict)
+        created_at: int
+        paused_nodes: Sequence[str] = Field(default_factory=list)
+        reasons: Sequence[Mapping[str, Any]] = Field(default_factory=list)
+        human_input_forms: Sequence[HumanInputRequiredResponse.Data] = Field(default_factory=list)
+        status: WorkflowExecutionStatus
+        elapsed_time: float
+        total_tokens: int
+        total_steps: int
+
+    data: Data
+
+
 class CompletionAppBlockingResponse(AppBlockingResponse):
     """
     CompletionAppBlockingResponse entity

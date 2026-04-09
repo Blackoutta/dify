@@ -35,16 +35,21 @@ from core.app.entities.queue_entities import (
     QueueWorkflowSucceededEvent,
 )
 from core.app.entities.task_entities import (
+    ChatbotAppPausedBlockingResponse,
+    HumanInputRequiredResponse,
     AnnotationReply,
     AnnotationReplyAccount,
     MessageAudioStreamResponse,
     MessageEndStreamResponse,
     PingStreamResponse,
+    WorkflowPauseStreamResponse,
 )
 from core.base.tts.app_generator_tts_publisher import AudioTrunk
+from dify_graph.entities.pause_reason import PauseReasonType
 from dify_graph.enums import BuiltinNodeTypes
 from dify_graph.runtime import GraphRuntimeState, VariablePool
 from dify_graph.system_variable import SystemVariable
+from dify_graph.nodes.human_input.entities import UserAction
 from models.enums import MessageStatus
 from models.model import AppMode, EndUser
 
@@ -116,6 +121,58 @@ class TestAdvancedChatGenerateTaskPipeline:
 
         assert response.data.answer == "done"
         assert response.data.metadata == {"k": "v"}
+
+    def test_to_blocking_response_returns_pause_payload(self):
+        pipeline = _make_pipeline()
+        pipeline._task_state.answer = "partial answer"
+        pipeline._workflow_run_id = "run-id"
+
+        def _gen():
+            yield HumanInputRequiredResponse(
+                task_id="task",
+                workflow_run_id="run-id",
+                data=HumanInputRequiredResponse.Data(
+                    form_id="form-1",
+                    node_id="node-1",
+                    node_title="Approval",
+                    form_content="Need approval",
+                    inputs=[],
+                    actions=[UserAction(id="approve", title="Approve")],
+                    display_in_ui=True,
+                    form_token="token-1",
+                    resolved_default_values={},
+                    expiration_time=123,
+                ),
+            )
+            yield WorkflowPauseStreamResponse(
+                task_id="task",
+                workflow_run_id="run-id",
+                data=WorkflowPauseStreamResponse.Data(
+                    workflow_run_id="run-id",
+                    paused_nodes=["node-1"],
+                    outputs={},
+                    reasons=[
+                        {
+                            "TYPE": PauseReasonType.HUMAN_INPUT_REQUIRED,
+                            "form_id": "form-1",
+                            "node_id": "node-1",
+                        },
+                    ],
+                    status="paused",
+                    created_at=1,
+                    elapsed_time=0.1,
+                    total_tokens=0,
+                    total_steps=0,
+                ),
+            )
+
+        response = pipeline._to_blocking_response(_gen())
+
+        assert isinstance(response, ChatbotAppPausedBlockingResponse)
+        assert response.data.answer == "partial answer"
+        assert response.data.workflow_run_id == "run-id"
+        assert response.data.human_input_forms[0].form_id == "form-1"
+        assert response.data.human_input_forms[0].expiration_time == 123
 
     def test_handle_text_chunk_event_updates_state(self):
         pipeline = _make_pipeline()
