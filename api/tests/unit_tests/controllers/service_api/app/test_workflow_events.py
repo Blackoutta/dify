@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 from werkzeug.exceptions import NotFound
@@ -128,7 +128,43 @@ class TestWorkflowEventsApi:
             response = handler(api, app_model=app_model, end_user=end_user, task_id="run-1")
 
         assert response.get_data(as_text=True) == "data: streamed\n\n"
-        msg_generator.retrieve_events.assert_called_once_with(AppMode.WORKFLOW, "run-1")
+        msg_generator.retrieve_events.assert_called_once_with(
+            AppMode.WORKFLOW,
+            "run-1",
+            terminal_events=None,
+        )
+        workflow_generator.convert_to_event_stream.assert_called_once_with(["raw-event"])
+
+    def test_running_run_streams_events_continuing_on_pause(self, app, monkeypatch: pytest.MonkeyPatch) -> None:
+        workflow_run = SimpleNamespace(
+            id="run-1",
+            app_id="app-1",
+            created_by_role=CreatorUserRole.END_USER,
+            created_by="end-user-1",
+            finished_at=None,
+        )
+        workflow_events_module = _mock_repo_for_run(monkeypatch, workflow_run=workflow_run)
+        msg_generator = Mock()
+        msg_generator.retrieve_events.return_value = ["raw-event"]
+        workflow_generator = Mock()
+        workflow_generator.convert_to_event_stream.return_value = iter(["data: streamed\n\n"])
+        monkeypatch.setattr(workflow_events_module, "MessageGenerator", lambda: msg_generator)
+        monkeypatch.setattr(workflow_events_module, "WorkflowAppGenerator", lambda: workflow_generator)
+
+        api = WorkflowEventsApi()
+        handler = _unwrap(api.get)
+        app_model = SimpleNamespace(id="app-1", tenant_id="tenant-1", mode=AppMode.WORKFLOW.value)
+        end_user = SimpleNamespace(id="end-user-1")
+
+        with app.test_request_context("/workflow/run-1/events?user=u1&continue_on_pause=true", method="GET"):
+            response = handler(api, app_model=app_model, end_user=end_user, task_id="run-1")
+
+        assert response.get_data(as_text=True) == "data: streamed\n\n"
+        msg_generator.retrieve_events.assert_called_once_with(
+            AppMode.WORKFLOW,
+            "run-1",
+            terminal_events=["workflow_finished"],
+        )
         workflow_generator.convert_to_event_stream.assert_called_once_with(["raw-event"])
 
     def test_running_run_with_snapshot(self, app, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,4 +195,44 @@ class TestWorkflowEventsApi:
         assert response.get_data(as_text=True) == "data: snapshot\n\n"
         msg_generator.retrieve_events.assert_not_called()
         snapshot_builder.assert_called_once()
+        workflow_generator.convert_to_event_stream.assert_called_once_with(["snapshot-events"])
+
+    def test_running_run_with_snapshot_continues_on_pause(self, app, monkeypatch: pytest.MonkeyPatch) -> None:
+        workflow_run = SimpleNamespace(
+            id="run-1",
+            app_id="app-1",
+            created_by_role=CreatorUserRole.END_USER,
+            created_by="end-user-1",
+            finished_at=None,
+        )
+        workflow_events_module = _mock_repo_for_run(monkeypatch, workflow_run=workflow_run)
+        msg_generator = Mock()
+        workflow_generator = Mock()
+        workflow_generator.convert_to_event_stream.return_value = iter(["data: snapshot\n\n"])
+        snapshot_builder = Mock(return_value=["snapshot-events"])
+        monkeypatch.setattr(workflow_events_module, "MessageGenerator", lambda: msg_generator)
+        monkeypatch.setattr(workflow_events_module, "WorkflowAppGenerator", lambda: workflow_generator)
+        monkeypatch.setattr(workflow_events_module, "build_workflow_event_stream", snapshot_builder)
+
+        api = WorkflowEventsApi()
+        handler = _unwrap(api.get)
+        app_model = SimpleNamespace(id="app-1", tenant_id="tenant-1", mode=AppMode.WORKFLOW.value)
+        end_user = SimpleNamespace(id="end-user-1")
+
+        with app.test_request_context(
+            "/workflow/run-1/events?user=u1&include_state_snapshot=true&continue_on_pause=true",
+            method="GET",
+        ):
+            response = handler(api, app_model=app_model, end_user=end_user, task_id="run-1")
+
+        assert response.get_data(as_text=True) == "data: snapshot\n\n"
+        msg_generator.retrieve_events.assert_not_called()
+        snapshot_builder.assert_called_once_with(
+            app_mode=AppMode.WORKFLOW,
+            workflow_run=workflow_run,
+            tenant_id="tenant-1",
+            app_id="app-1",
+            session_maker=ANY,
+            close_on_pause=False,
+        )
         workflow_generator.convert_to_event_stream.assert_called_once_with(["snapshot-events"])

@@ -24,6 +24,7 @@ from services.workflow_event_snapshot_service import (
     BufferState,
     MessageContext,
     _build_snapshot_events,
+    _is_terminal_event,
     _resolve_task_id,
 )
 
@@ -224,3 +225,12 @@ def test_resolve_task_id_priority(context_task_id, buffered_task_id, expected) -
         buffer_state.task_id_ready.set()
     task_id = _resolve_task_id(resumption_context, buffer_state, "run-1", wait_timeout=0.0)
     assert task_id == expected
+
+
+def test_is_terminal_event_respects_close_on_pause_flag() -> None:
+    pause_event = {"event": "workflow_paused"}
+    finish_event = {"event": "workflow_finished"}
+
+    assert _is_terminal_event(pause_event, close_on_pause=True) is True
+    assert _is_terminal_event(pause_event, close_on_pause=False) is False
+    assert _is_terminal_event(finish_event, close_on_pause=False) is True

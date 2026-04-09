@@ -61,6 +61,7 @@ def build_workflow_event_stream(
     session_maker: sessionmaker[Session],
     idle_timeout: float = 300,
     ping_interval: float = 10.0,
+    close_on_pause: bool = True,
 ) -> Generator[Mapping[str, Any] | str, None, None]:
     topic = MessageGenerator.get_response_topic(app_mode, workflow_run.id)
     workflow_run_repo = DifyAPIRepositoryFactory.create_api_workflow_run_repository(session_maker)
@@ -121,7 +122,7 @@ def build_workflow_event_stream(
                     last_msg_time = time.time()
                     last_ping_time = last_msg_time
                     yield event
-                    if _is_terminal_event(event, include_paused=True):
+                    if _is_terminal_event(event, close_on_pause=close_on_pause):
                         return
 
                 while True:
@@ -146,7 +147,7 @@ def build_workflow_event_stream(
                     last_msg_time = time.time()
                     last_ping_time = last_msg_time
                     yield event
-                    if _is_terminal_event(event, include_paused=True):
+                    if _is_terminal_event(event, close_on_pause=close_on_pause):
                         return
             finally:
                 buffer_state.stop_event.set()
@@ -449,12 +450,12 @@ def _parse_event_message(message: bytes) -> Mapping[str, Any] | None:
     return event
 
 
-def _is_terminal_event(event: Mapping[str, Any] | str, include_paused=False) -> bool:
+def _is_terminal_event(event: Mapping[str, Any] | str, close_on_pause: bool = True) -> bool:
     if not isinstance(event, Mapping):
         return False
     event_type = event.get("event")
     if event_type == StreamEvent.WORKFLOW_FINISHED.value:
         return True
-    if include_paused:
+    if close_on_pause:
         return event_type == StreamEvent.WORKFLOW_PAUSED.value
     return False
