@@ -179,6 +179,10 @@ class AppGenerateService:
                 else:
                     # Blocking mode: run synchronously and return JSON instead of SSE
                     # Keep behaviour consistent with WORKFLOW blocking branch.
+                    pause_config = PauseStateLayerConfig(
+                        session_factory=session_factory.get_session_maker(),
+                        state_owner_user_id=workflow.created_by,
+                    )
                     advanced_generator = AdvancedChatAppGenerator()
                     return rate_limit.generate(
                         advanced_generator.convert_to_event_stream(
@@ -190,6 +194,7 @@ class AppGenerateService:
                                 invoke_from=invoke_from,
                                 workflow_run_id=str(uuid.uuid4()),
                                 streaming=False,
+                                pause_state_config=pause_config,
                             )
                         ),
                         request_id=request_id,

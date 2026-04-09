@@ -7,11 +7,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from core.app.entities.app_invoke_entities import AdvancedChatAppGenerateEntity, InvokeFrom
+from core.app.entities.app_invoke_entities import AdvancedChatAppGenerateEntity, InvokeFrom, WorkflowAppGenerateEntity
 from models.enums import CreatorUserRole
 from models.model import App, AppMode, Conversation
 from models.workflow import Workflow, WorkflowRun
-from tasks.app_generate.workflow_execute_task import _publish_streaming_response, _resume_app_execution
+from tasks.app_generate.workflow_execute_task import (
+    _publish_streaming_response,
+    _resume_advanced_chat,
+    _resume_app_execution,
+    _resume_workflow,
+)
 
 
 class _FakeSessionContext:
@@ -36,6 +41,22 @@ def _build_advanced_chat_generate_entity(conversation_id: str | None) -> Advance
         query="query",
         conversation_id=conversation_id,
     )
+
+
+def _build_workflow_generate_entity(stream: bool) -> WorkflowAppGenerateEntity:
+    return WorkflowAppGenerateEntity(
+        task_id="task-id",
+        inputs={},
+        files=[],
+        user_id="user-id",
+        stream=stream,
+        invoke_from=InvokeFrom.WEB_APP,
+        workflow_execution_id="workflow-run-id",
+    )
+
+
+def _single_event_generator(payload):
+    yield payload
 
 
 @pytest.fixture
@@ -200,3 +221,89 @@ def test_resume_app_execution_returns_early_when_advanced_chat_missing_conversat
     session.scalar.assert_not_called()
     workflow_run_repo.resume_workflow_pause.assert_not_called()
     resume_advanced_chat.assert_not_called()
+
+
+def test_resume_advanced_chat_publishes_events_for_originally_blocking_runs(monkeypatch: pytest.MonkeyPatch):
+    generate_entity = _build_advanced_chat_generate_entity(conversation_id="conversation-id")
+    generate_entity.stream = False
+
+    generator_instance = MagicMock()
+    response_stream = _single_event_generator({"event": "message"})
+    generator_instance.resume.return_value = response_stream
+    monkeypatch.setattr(
+        "tasks.app_generate.workflow_execute_task.AdvancedChatAppGenerator",
+        lambda: generator_instance,
+    )
+
+    publish_streaming_response = MagicMock()
+    monkeypatch.setattr("tasks.app_generate.workflow_execute_task._publish_streaming_response", publish_streaming_response)
+    monkeypatch.setattr(
+        "tasks.app_generate.workflow_execute_task.DifyCoreRepositoryFactory.create_workflow_execution_repository",
+        lambda **kwargs: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "tasks.app_generate.workflow_execute_task.DifyCoreRepositoryFactory.create_workflow_node_execution_repository",
+        lambda **kwargs: MagicMock(),
+    )
+
+    _resume_advanced_chat(
+        app_model=SimpleNamespace(id="app-id"),
+        workflow=SimpleNamespace(created_by="workflow-owner"),
+        user=MagicMock(),
+        conversation=SimpleNamespace(id="conversation-id"),
+        message=MagicMock(),
+        generate_entity=generate_entity,
+        graph_runtime_state=MagicMock(),
+        session_factory=MagicMock(),
+        pause_state_config=MagicMock(),
+        workflow_run_id="workflow-run-id",
+        workflow_run=SimpleNamespace(triggered_from="app_run"),
+    )
+
+    resumed_entity = generator_instance.resume.call_args.kwargs["application_generate_entity"]
+    assert resumed_entity.stream is True
+    publish_streaming_response.assert_called_once_with(response_stream, "workflow-run-id", AppMode.ADVANCED_CHAT)
+
+
+def test_resume_workflow_publishes_events_for_originally_blocking_runs(monkeypatch: pytest.MonkeyPatch):
+    generate_entity = _build_workflow_generate_entity(stream=False)
+
+    generator_instance = MagicMock()
+    response_stream = _single_event_generator({"event": "workflow_finished"})
+    generator_instance.resume.return_value = response_stream
+    monkeypatch.setattr(
+        "tasks.app_generate.workflow_execute_task.WorkflowAppGenerator",
+        lambda: generator_instance,
+    )
+
+    publish_streaming_response = MagicMock()
+    monkeypatch.setattr("tasks.app_generate.workflow_execute_task._publish_streaming_response", publish_streaming_response)
+    monkeypatch.setattr(
+        "tasks.app_generate.workflow_execute_task.DifyCoreRepositoryFactory.create_workflow_execution_repository",
+        lambda **kwargs: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "tasks.app_generate.workflow_execute_task.DifyCoreRepositoryFactory.create_workflow_node_execution_repository",
+        lambda **kwargs: MagicMock(),
+    )
+    workflow_run_repo = MagicMock()
+    pause_entity = MagicMock()
+
+    _resume_workflow(
+        app_model=SimpleNamespace(id="app-id"),
+        workflow=SimpleNamespace(created_by="workflow-owner"),
+        user=MagicMock(),
+        generate_entity=generate_entity,
+        graph_runtime_state=MagicMock(),
+        session_factory=MagicMock(),
+        pause_state_config=MagicMock(),
+        workflow_run_id="workflow-run-id",
+        workflow_run=SimpleNamespace(triggered_from="app_run"),
+        workflow_run_repo=workflow_run_repo,
+        pause_entity=pause_entity,
+    )
+
+    resumed_entity = generator_instance.resume.call_args.kwargs["application_generate_entity"]
+    assert resumed_entity.stream is True
+    publish_streaming_response.assert_called_once_with(response_stream, "workflow-run-id", AppMode.WORKFLOW)
+    workflow_run_repo.delete_workflow_pause.assert_called_once_with(pause_entity)
