@@ -16,6 +16,7 @@ from graphon.workflow_type_encoder import WorkflowRuntimeTypeConverter
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from core.app.apps.common.pause_reason_serializer import pause_reason_to_public_dict
 from core.app.apps.message_generator import MessageGenerator
 from core.app.entities.task_entities import (
     MessageReplaceStreamResponse,
@@ -26,6 +27,8 @@ from core.app.entities.task_entities import (
     WorkflowStartStreamResponse,
 )
 from core.app.layers.pause_state_persist_layer import WorkflowResumptionContext
+from core.workflow.human_input_forms import load_form_tokens_by_form_id
+from extensions.ext_database import db
 from models.model import AppMode, Message
 from models.workflow import WorkflowNodeExecutionTriggeredFrom, WorkflowRun
 from repositories.api_workflow_node_execution_repository import WorkflowNodeExecutionSnapshot
@@ -61,6 +64,7 @@ def build_workflow_event_stream(
     session_maker: sessionmaker[Session],
     idle_timeout: float = 300,
     ping_interval: float = 10.0,
+    close_on_pause: bool = True,
 ) -> Generator[Mapping[str, Any] | str, None, None]:
     topic = MessageGenerator.get_response_topic(app_mode, workflow_run.id)
     workflow_run_repo = DifyAPIRepositoryFactory.create_api_workflow_run_repository(session_maker)
@@ -121,7 +125,7 @@ def build_workflow_event_stream(
                     last_msg_time = time.time()
                     last_ping_time = last_msg_time
                     yield event
-                    if _is_terminal_event(event, include_paused=True):
+                    if _is_terminal_event(event, close_on_pause=close_on_pause):
                         return
 
                 while True:
@@ -146,7 +150,7 @@ def build_workflow_event_stream(
                     last_msg_time = time.time()
                     last_ping_time = last_msg_time
                     yield event
-                    if _is_terminal_event(event, include_paused=True):
+                    if _is_terminal_event(event, close_on_pause=close_on_pause):
                         return
             finally:
                 buffer_state.stop_event.set()
@@ -364,7 +368,24 @@ def _build_pause_event(
         paused_nodes = state.get_paused_nodes()
         outputs = dict(WorkflowRuntimeTypeConverter().to_json_encodable(state.outputs or {}))
 
-    reasons = [reason.model_dump(mode="json") for reason in pause_entity.get_pause_reasons()]
+    reasons = [pause_reason_to_public_dict(reason) for reason in pause_entity.get_pause_reasons()]
+    human_input_form_ids = [
+        form_id
+        for reason in reasons
+        if reason.get("type") == "human_input_required"
+        for form_id in [reason.get("form_id")]
+        if isinstance(form_id, str)
+    ]
+    if human_input_form_ids:
+        with Session(bind=db.engine, expire_on_commit=False) as session:
+            form_tokens_by_form_id = load_form_tokens_by_form_id(human_input_form_ids, session=session)
+        for reason in reasons:
+            if reason.get("type") != "human_input_required":
+                continue
+            form_id = reason.get("form_id")
+            if isinstance(form_id, str):
+                reason["form_token"] = form_tokens_by_form_id.get(form_id)
+
     response = WorkflowPauseStreamResponse(
         task_id=task_id,
         workflow_run_id=workflow_run_id,
@@ -449,12 +470,12 @@ def _parse_event_message(message: bytes) -> Mapping[str, Any] | None:
     return event
 
 
-def _is_terminal_event(event: Mapping[str, Any] | str, include_paused=False) -> bool:
+def _is_terminal_event(event: Mapping[str, Any] | str, close_on_pause: bool = True) -> bool:
     if not isinstance(event, Mapping):
         return False
     event_type = event.get("event")
     if event_type == StreamEvent.WORKFLOW_FINISHED.value:
         return True
-    if include_paused:
+    if close_on_pause:
         return event_type == StreamEvent.WORKFLOW_PAUSED.value
     return False
