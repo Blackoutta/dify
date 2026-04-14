@@ -619,6 +619,7 @@ class TestHitlServiceApi:
         assert pause_resp.data.outputs == {}
         assert pause_resp.data.reasons[0]["type"] == "human_input_required"
         assert pause_resp.data.reasons[0]["form_id"] == "form-1"
+        assert pause_resp.data.reasons[0]["form_token"] == "token"
         assert pause_resp.data.reasons[0]["expiration_time"] == int(expiration_time.timestamp())
 
         assert isinstance(responses[0], HumanInputRequiredResponse)
@@ -639,15 +640,21 @@ class TestHitlServiceApi:
         resumption_context = _build_resumption_context("task-ctx")
         monkeypatch.setattr("services.workflow_event_snapshot_service.load_form_tokens_by_form_id", lambda form_ids, session=None: {"form-1": "wtok"})
 
-        class _FakeSession:
+        class _SessionContext:
+            def __init__(self, session):
+                self._session = session
+
             def __enter__(self):
-                return self
+                return self._session
 
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-        monkeypatch.setattr("services.workflow_event_snapshot_service.Session", lambda *args, **kwargs: _FakeSession())
-        monkeypatch.setattr("services.workflow_event_snapshot_service.db", SimpleNamespace(engine=object()))
+        session_maker = lambda: _SessionContext(
+            SimpleNamespace(
+                execute=lambda _stmt: [("form-1", datetime(2024, 1, 1, tzinfo=UTC), '{"display_in_ui": true}')],
+            )
+        )
         pause_entity = _FakePauseEntity(
             pause_id="pause-1",
             workflow_run_id="run-1",
@@ -670,15 +677,18 @@ class TestHitlServiceApi:
             message_context=None,
             pause_entity=pause_entity,
             resumption_context=resumption_context,
+            session_maker=session_maker,
         )
 
         assert [event["event"] for event in events] == [
             "workflow_started",
             "node_started",
             "node_finished",
+            "human_input_required",
             "workflow_paused",
         ]
         assert events[2]["data"]["status"] == WorkflowNodeExecutionStatus.PAUSED.value
+        assert events[3]["data"]["form_token"] == "wtok"
         pause_data = events[-1]["data"]
         assert pause_data["paused_nodes"] == ["node-1"]
         assert pause_data["outputs"] == {"result": "value"}

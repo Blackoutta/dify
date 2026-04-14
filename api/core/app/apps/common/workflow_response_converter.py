@@ -351,6 +351,7 @@ class WorkflowResponseConverter:
             if expiration_time is None:
                 raise ValueError(f"HumanInputForm not found for pause reason, form_id={form_id}")
 
+            pause_reason["form_token"] = form_token_by_form_id.get(form_id)
             pause_reason["expiration_time"] = int(expiration_time.timestamp())
 
         responses: list[StreamResponse] = []

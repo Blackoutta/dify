@@ -747,16 +747,11 @@ def test_build_snapshot_events_preserves_public_form_token(monkeypatch: pytest.M
     snapshot = _build_snapshot(WorkflowNodeExecutionStatus.PAUSED)
     resumption_context = _build_resumption_context("task-ctx")
     monkeypatch.setattr(service_module, "load_form_tokens_by_form_id", lambda form_ids, session=None: {"form-1": "wtok"})
-
-    class _FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(service_module, "Session", lambda *args, **kwargs: _FakeSession())
-    monkeypatch.setattr(service_module, "db", SimpleNamespace(engine=object()))
+    session_maker = _SessionMaker(
+        SimpleNamespace(
+            execute=lambda _stmt: [("form-1", datetime(2024, 1, 1, tzinfo=UTC), '{"display_in_ui": true}')],
+        )
+    )
     pause_entity = _FakePauseEntity(
         pause_id="pause-1",
         workflow_run_id="run-1",
@@ -779,7 +774,60 @@ def test_build_snapshot_events_preserves_public_form_token(monkeypatch: pytest.M
         message_context=None,
         pause_entity=pause_entity,
         resumption_context=resumption_context,
+        session_maker=cast(sessionmaker[Session], session_maker),
     )
 
+    assert events[-2]["event"] == StreamEvent.HUMAN_INPUT_REQUIRED.value
+    assert events[-2]["data"]["form_token"] == "wtok"
     pause_data = events[-1]["data"]
     assert pause_data["reasons"][0]["form_token"] == "wtok"
+
+
+def test_build_workflow_event_stream_loads_pause_tokens_without_flask_app_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_run = _build_workflow_run_additional(status=WorkflowExecutionStatus.PAUSED)
+    topic = _Topic(_StaticSubscription())
+    pause_entity = _FakePauseEntity(
+        pause_id="pause-1",
+        workflow_run_id="run-1",
+        paused_at_value=datetime(2024, 1, 1, tzinfo=UTC),
+        pause_reasons=[
+            HumanInputRequired(
+                form_id="form-1",
+                form_content="content",
+                node_id="node-1",
+                node_title="Human Input",
+            )
+        ],
+    )
+    workflow_run_repo = SimpleNamespace(get_workflow_pause=MagicMock(return_value=pause_entity))
+    node_repo = SimpleNamespace(get_execution_snapshots_by_workflow_run=MagicMock(return_value=[]))
+    factory = SimpleNamespace(
+        create_api_workflow_run_repository=MagicMock(return_value=workflow_run_repo),
+        create_api_workflow_node_execution_repository=MagicMock(return_value=node_repo),
+    )
+    monkeypatch.setattr(service_module, "DifyAPIRepositoryFactory", factory)
+    monkeypatch.setattr(service_module.MessageGenerator, "get_response_topic", MagicMock(return_value=topic))
+    monkeypatch.setattr(service_module, "_load_resumption_context", MagicMock(return_value=_build_resumption_context("task-1")))
+    monkeypatch.setattr(service_module, "load_form_tokens_by_form_id", lambda form_ids, session=None: {"form-1": "wtok"})
+
+    session = SimpleNamespace(
+        scalar=MagicMock(return_value=None),
+        execute=lambda _stmt: [("form-1", datetime(2024, 1, 1, tzinfo=UTC), '{"display_in_ui": true}')],
+    )
+    session_maker = _SessionMaker(session)
+
+    events = list(
+        build_workflow_event_stream(
+            app_mode=AppMode.WORKFLOW,
+            workflow_run=workflow_run,
+            tenant_id="tenant-1",
+            app_id="app-1",
+            session_maker=cast(sessionmaker[Session], session_maker),
+        )
+    )
+
+    pause_event = cast(Mapping[str, Any], events[-1])
+    assert pause_event["event"] == StreamEvent.WORKFLOW_PAUSED.value
+    assert pause_event["data"]["reasons"][0]["form_token"] == "wtok"

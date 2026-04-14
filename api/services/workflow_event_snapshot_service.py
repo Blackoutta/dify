@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from core.app.apps.common.pause_reason_serializer import pause_reason_to_public_dict
 from core.app.apps.message_generator import MessageGenerator
 from core.app.entities.task_entities import (
+    HumanInputRequiredResponse,
     MessageReplaceStreamResponse,
     NodeFinishStreamResponse,
     NodeStartStreamResponse,
@@ -28,7 +29,7 @@ from core.app.entities.task_entities import (
 )
 from core.app.layers.pause_state_persist_layer import WorkflowResumptionContext
 from core.workflow.human_input_forms import load_form_tokens_by_form_id
-from extensions.ext_database import db
+from models.human_input import HumanInputForm
 from models.model import AppMode, Message
 from models.workflow import WorkflowNodeExecutionTriggeredFrom, WorkflowRun
 from repositories.api_workflow_node_execution_repository import WorkflowNodeExecutionSnapshot
@@ -119,6 +120,7 @@ def build_workflow_event_stream(
                     message_context=message_context,
                     pause_entity=pause_entity,
                     resumption_context=resumption_context,
+                    session_maker=session_maker,
                 )
 
                 for event in snapshot_events:
@@ -211,6 +213,7 @@ def _build_snapshot_events(
     message_context: MessageContext | None,
     pause_entity: WorkflowPauseEntity | None,
     resumption_context: WorkflowResumptionContext | None,
+    session_maker: sessionmaker[Session] | None = None,
 ) -> list[Mapping[str, Any]]:
     events: list[Mapping[str, Any]] = []
 
@@ -245,12 +248,22 @@ def _build_snapshot_events(
             events.append(node_finished)
 
     if workflow_run.status == WorkflowExecutionStatus.PAUSED and pause_entity is not None:
+        for human_input_event in _build_human_input_required_events(
+            workflow_run_id=workflow_run.id,
+            task_id=task_id,
+            pause_entity=pause_entity,
+            session_maker=session_maker,
+        ):
+            _apply_message_context(human_input_event, message_context)
+            events.append(human_input_event)
+
         pause_event = _build_pause_event(
             workflow_run=workflow_run,
             workflow_run_id=workflow_run.id,
             task_id=task_id,
             pause_entity=pause_entity,
             resumption_context=resumption_context,
+            session_maker=session_maker,
         )
         if pause_event is not None:
             _apply_message_context(pause_event, message_context)
@@ -318,6 +331,78 @@ def _build_node_started_event(
     return response.to_ignore_detail_dict()
 
 
+def _build_human_input_required_events(
+    *,
+    workflow_run_id: str,
+    task_id: str,
+    pause_entity: WorkflowPauseEntity,
+    session_maker: sessionmaker[Session] | None,
+) -> list[dict[str, Any]]:
+    reasons = [pause_reason_to_public_dict(reason) for reason in pause_entity.get_pause_reasons()]
+    human_input_form_ids = [
+        form_id
+        for reason in reasons
+        if reason.get("type") == "human_input_required"
+        for form_id in [reason.get("form_id")]
+        if isinstance(form_id, str)
+    ]
+
+    expiration_times_by_form_id: dict[str, int] = {}
+    display_in_ui_by_form_id: dict[str, bool] = {}
+    form_tokens_by_form_id: dict[str, str] = {}
+    if human_input_form_ids and session_maker is not None:
+        stmt = select(HumanInputForm.id, HumanInputForm.expiration_time, HumanInputForm.form_definition).where(
+            HumanInputForm.id.in_(human_input_form_ids)
+        )
+        with session_maker() as session:
+            for form_id, expiration_time, form_definition in session.execute(stmt):
+                expiration_times_by_form_id[str(form_id)] = int(expiration_time.timestamp())
+                try:
+                    definition_payload = json.loads(form_definition) if form_definition else {}
+                except (TypeError, json.JSONDecodeError):
+                    definition_payload = {}
+                display_in_ui_by_form_id[str(form_id)] = bool(definition_payload.get("display_in_ui"))
+            form_tokens_by_form_id = load_form_tokens_by_form_id(human_input_form_ids, session=session)
+
+    events: list[dict[str, Any]] = []
+    for reason in reasons:
+        if reason.get("type") != "human_input_required":
+            continue
+
+        form_id = reason.get("form_id")
+        node_id = reason.get("node_id")
+        node_title = reason.get("node_title")
+        form_content = reason.get("form_content")
+        if not all(isinstance(value, str) for value in (form_id, node_id, node_title, form_content)):
+            continue
+
+        expiration_time = expiration_times_by_form_id.get(form_id)
+        if expiration_time is None:
+            continue
+
+        response = HumanInputRequiredResponse(
+            task_id=task_id,
+            workflow_run_id=workflow_run_id,
+            data=HumanInputRequiredResponse.Data(
+                form_id=form_id,
+                node_id=node_id,
+                node_title=node_title,
+                form_content=form_content,
+                inputs=reason.get("inputs") or [],
+                actions=reason.get("actions") or [],
+                display_in_ui=display_in_ui_by_form_id.get(form_id, False),
+                form_token=form_tokens_by_form_id.get(form_id),
+                resolved_default_values=reason.get("resolved_default_values") or {},
+                expiration_time=expiration_time,
+            ),
+        )
+        payload = response.model_dump(mode="json")
+        payload["event"] = response.event.value
+        events.append(payload)
+
+    return events
+
+
 def _build_node_finished_event(
     *,
     workflow_run_id: str,
@@ -360,6 +445,7 @@ def _build_pause_event(
     task_id: str,
     pause_entity: WorkflowPauseEntity,
     resumption_context: WorkflowResumptionContext | None,
+    session_maker: sessionmaker[Session] | None,
 ) -> dict[str, Any] | None:
     paused_nodes: list[str] = []
     outputs: dict[str, Any] = {}
@@ -376,8 +462,8 @@ def _build_pause_event(
         for form_id in [reason.get("form_id")]
         if isinstance(form_id, str)
     ]
-    if human_input_form_ids:
-        with Session(bind=db.engine, expire_on_commit=False) as session:
+    if human_input_form_ids and session_maker is not None:
+        with session_maker() as session:
             form_tokens_by_form_id = load_form_tokens_by_form_id(human_input_form_ids, session=session)
         for reason in reasons:
             if reason.get("type") != "human_input_required":
