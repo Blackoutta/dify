@@ -13,12 +13,19 @@
 - 但 session 里的每个 trace 都返回 `rootSpan: null`
 - 因此 Phoenix 的 session 页面无法显示正常的 trace tree
 
+另外，一条新的 Phoenix trace detail 响应还显示：
+
+- 该 trace 的 `rootSpans.edges` 是存在的
+- Phoenix 在 trace detail 页面里把 workflow 类 span 当成了某种 root-like span
+- 但这个 span 仍然带有非空的 `parentId`
+- 且这个 parent 并不在该 trace 返回的 span 列表里
+
 ## 核心结论
 
 这里大概率有两个问题，而且它们叠在一起了：
 
 1. `session.id` 传播不一致
-2. prototype 很可能没有正确创建真正的 root workflow span，导致 Phoenix 无法解析 `rootSpan`
+2. prototype 很可能创建出来的是 orphan-root workflow span，而不是真正的 canonical root，因此 Phoenix 无法在 session 视图里解析 `rootSpan`
 
 第二个问题更关键。
 
@@ -97,7 +104,33 @@ Phoenix 的 session 聚合可能仍然能找到带 session 的顶层 span，但�
 - 一个自引用的子节点
 - 或者一个 parent chain 无法解析成合法 root 的 span
 
-即便 OTEL SDK 没有报错，Phoenix 也可能无法把它识别成 trace 的合法 root span。
+即便 OTEL SDK 没有报错，Phoenix 也可能无法把它识别成 trace 的合法 canonical root span。
+
+## 根据 trace detail 响应修正后的理解
+
+新的 Phoenix 响应让这个判断更精确了一些。
+
+它说明 prototype 的 trace 并不是“完全没有 root-like span”。更准确地说：
+
+- Phoenix 的 trace detail 视图仍然能给出 `rootSpans`
+- 但被选中的这个 root-like span 仍然带着非空 `parentId`
+- 且这个 parent 不在当前 trace payload 里
+
+这非常像 orphan root：
+
+- 在 trace detail 展示时，它还能被当成 root 来容错显示
+- 但它并不是一个干净的 canonical root，也就是说它并不是 `parentId = null` 的真正根
+
+这也解释了为什么产品上会出现两个不同现象：
+
+- trace detail 页面比较宽松，仍然可以展示 orphan-root 树
+- session 页面更严格，看起来要求 trace 拥有真正的 canonical root span
+
+在这个理解下，prototype 真正的问题就变成了：
+
+- hierarchy 在 trace detail 里看上去还能成立
+- 但 session 层面的 root 解析失败
+- 所以 `session.traces[].rootSpan` 会变成 `null`
 
 ## 为什么 session 查询结果正好符合这个判断
 
@@ -108,11 +141,17 @@ Phoenix 的 session 聚合可能仍然能找到带 session 的顶层 span，但�
 - 每个 trace 记录也存在
 - 但每个 trace 的 `rootSpan` 都是 `null`
 
-这个模式非常像：
+而 trace detail 查询又显示：
+
+- `rootSpans.edges` 是存在的
+- 但被选中的 root-like span 依旧带有非空 `parentId`
+
+把这两者放在一起看，这个模式非常像：
 
 - traces 已经被 ingest
 - session 层也已经索引到了这些 traces
-- 但是 Phoenix 无法计算出一个有效的 root span 记录
+- Phoenix 能在 trace detail 中容错找出一个 orphan-root 候选
+- 但 Phoenix 无法在 session 视图中计算出一个有效的 canonical root span 记录
 
 这更像是 root span 的 parentage 构造错误，而不是一个纯粹的 session 问题。
 
@@ -122,10 +161,11 @@ prototype 在 Phoenix 里的 session 展示异常，大概率不是 Phoenix sess
 
 更可能的链路是：
 
-1. workflow root span 不是以真正 root 的方式创建出来的
-2. Phoenix 无法解析 `rootSpan`
-3. session 页面依赖合法的 root span 才能展示 trace tree
-4. 同时 child span 的 `session.id` 在 debugging 模式下又传播不完整，让 session 视图进一步变差
+1. workflow root span 不是以真正 canonical root 的方式创建出来的
+2. Phoenix 在 trace detail 里仍然可能把它当 orphan root 来容错展示
+3. 但 Phoenix 无法在 session 查询里解析出 canonical `rootSpan`
+4. session 页面依赖 canonical root span 才能展示 trace tree
+5. 同时 child span 的 `session.id` 在 debugging 模式下又传播不完整，让 session 视图进一步变差
 
 ## 对后续重实现的直接启发
 
@@ -146,11 +186,13 @@ prototype 的 session 页面异常，应该不是 Phoenix UI bug。
 更可能是 tracing 构造问题：
 
 - root workflow span 是在不正确的 parent context 下创建的
-- Phoenix 因而无法识别 `rootSpan`
+- Phoenix 可能在 trace detail 中容忍它，把它当 orphan root 展示
+- 但 Phoenix 无法在 session 视图中识别它为 canonical `rootSpan`
 - 同时 child span 在 debugging 模式下的 `session.id` 传播也不完整
 
 这两者叠加起来，就解释了为什么：
 
 - traces 存在
 - sessions 存在
-- 但 session 页面里仍然看不到可用的 root trace 数据
+- trace detail 页面里还能看到 hierarchy
+- 但 session 页面里仍然看不到可用的 canonical root trace 数据

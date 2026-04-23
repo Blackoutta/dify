@@ -13,12 +13,19 @@ From the prototype test results:
 - each trace inside the session has `rootSpan: null`
 - the Phoenix session page therefore shows no usable trace tree
 
+An additional Phoenix trace-detail response shows:
+
+- the trace has `rootSpans.edges`
+- Phoenix treats the workflow-like span as a root-like span in the trace detail page
+- but that span still has a non-empty `parentId`
+- the referenced parent does not appear in the returned span list for that trace
+
 ## Main Conclusion
 
 There are likely two separate problems, and they reinforce each other:
 
 1. `session.id` propagation is inconsistent
-2. The prototype likely creates invalid or non-root workflow root spans, so Phoenix cannot resolve `rootSpan`
+2. The prototype likely creates orphan-root workflow spans rather than true canonical roots, so Phoenix cannot resolve `rootSpan` in session views
 
 The second problem is the more critical one.
 
@@ -97,7 +104,33 @@ That suggests Phoenix may interpret the supposed root span as:
 - a self-parented span
 - or a span whose parent chain cannot be resolved into a valid root
 
-Even if the OTEL SDK accepts this, Phoenix may still fail to identify a valid root span for the trace.
+Even if the OTEL SDK accepts this, Phoenix may still fail to identify a valid canonical root span for the trace.
+
+## Refined Interpretation From The Trace Detail Response
+
+The newer Phoenix response changes the diagnosis in an important way.
+
+It shows that the prototype trace is not completely missing a root-like span. Instead:
+
+- Phoenix trace detail can still expose a `rootSpans` entry
+- but the selected span still has a non-empty `parentId`
+- and that parent is not part of the trace payload
+
+This strongly suggests the workflow span is being treated as an orphan root:
+
+- it behaves like a root for trace-detail display
+- but it is not a clean canonical root with `parentId = null`
+
+That distinction likely explains the product behavior difference:
+
+- trace detail view is tolerant and can still render an orphan-root tree
+- session view appears stricter and expects a canonical root span
+
+Under that interpretation, the prototype's real failure mode is:
+
+- hierarchy can still look correct in trace detail
+- but session-level root resolution fails
+- therefore `session.traces[].rootSpan` becomes `null`
 
 ## Why the session query result matches this diagnosis
 
@@ -108,11 +141,17 @@ The observed session query shows:
 - each trace record exists
 - but `rootSpan` is `null` for every trace
 
-That pattern strongly suggests:
+The observed trace-detail query also shows:
+
+- `rootSpans.edges` exists
+- but the selected root-like span still has a non-empty `parentId`
+
+Together, that pattern strongly suggests:
 
 - traces were ingested
 - session-level indexing found them
-- but Phoenix could not compute a valid root span record
+- Phoenix could find an orphan-root candidate for trace detail
+- but Phoenix could not compute a valid canonical root span record for session usage
 
 This is more consistent with malformed root-span parentage than with a pure session problem.
 
@@ -122,10 +161,11 @@ The prototype's visible session problem is probably not caused primarily by Phoe
 
 It is more likely:
 
-1. workflow root spans are not emitted as true roots
-2. Phoenix cannot resolve `rootSpan`
-3. session pages depend on valid root spans to render trace trees
-4. inconsistent `session.id` on child spans makes the session experience even weaker
+1. workflow root spans are not emitted as true canonical roots
+2. Phoenix may still render them as orphan roots in trace detail
+3. Phoenix cannot resolve a canonical `rootSpan` for session queries
+4. session pages depend on canonical root spans to render trace trees
+5. inconsistent `session.id` on child spans makes the session experience even weaker
 
 ## Practical Takeaway
 
@@ -146,11 +186,13 @@ The prototype's session display issue is likely not a Phoenix UI bug.
 It is more likely a tracing construction bug:
 
 - root workflow spans are created with an invalid parent context
-- Phoenix cannot determine `rootSpan`
+- Phoenix may tolerate them as orphan roots in trace detail
+- Phoenix cannot determine a canonical `rootSpan` for sessions
 - child spans also have incomplete `session.id` propagation in debugging mode
 
 That combination explains why:
 
 - traces exist
 - sessions exist
-- but session pages still show no usable root trace data
+- trace detail can still show hierarchy
+- but session pages still show no usable canonical root trace data
