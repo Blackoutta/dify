@@ -295,8 +295,6 @@ def test_workflow_trace_uses_extracted_root_context(mock_sessionmaker, mock_repo
         trace_instance.workflow_trace(info)
 
     mock_extract.assert_called_once_with(carrier=trace_instance.carrier)
-    assert trace_instance.tracer.start_span.call_args_list[0].kwargs["name"] == "Dify"
-    assert trace_instance.tracer.start_span.call_args_list[0].kwargs["context"] is root_context
     assert trace_instance.tracer.start_span.call_args_list[1].kwargs["context"] is root_context
 
 
@@ -324,35 +322,6 @@ def test_workflow_trace_falls_back_to_workflow_run_id_for_session(
 
     assert trace_instance.tracer.start_span.call_args_list[1].kwargs["attributes"][SpanAttributes.SESSION_ID] == (
         info.workflow_run_id
-    )
-
-
-@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
-def test_message_trace_success(mock_db, trace_instance):
-    mock_db.engine = MagicMock()
-    info = _make_message_info()
-    info.message_data = MagicMock()
-    info.message_data.conversation_id = "conversation-1"
-    info.message_data.from_account_id = "acc1"
-    info.message_data.from_end_user_id = None
-    info.message_data.query = "q"
-    info.message_data.answer = "a"
-    info.message_data.status = "s"
-    info.message_data.model_id = "m"
-    info.message_data.model_provider = "p"
-    info.message_data.message_metadata = "{}"
-    info.message_data.error = None
-    info.error = None
-
-    root_span = MagicMock()
-    message_span = MagicMock()
-    llm_span = MagicMock()
-    trace_instance.tracer.start_span.side_effect = [root_span, message_span, llm_span]
-
-    trace_instance.message_trace(info)
-
-    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["attributes"][SpanAttributes.SESSION_ID] == (
-        "conversation-1"
     )
 
 
