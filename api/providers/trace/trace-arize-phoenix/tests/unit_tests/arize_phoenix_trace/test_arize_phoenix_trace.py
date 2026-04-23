@@ -338,7 +338,7 @@ def test_workflow_trace_uses_canonical_root_context_for_top_level_workflow(
 
     mock_ensure_root_span.assert_called_once_with(
         info.resolved_trace_id,
-        root_span_name=None,
+        root_span_name="app1",
         root_span_attributes={
             SpanAttributes.INPUT_VALUE: safe_json_dumps(info.workflow_run_inputs),
             SpanAttributes.INPUT_MIME_TYPE: "application/json",
@@ -392,6 +392,33 @@ def test_workflow_trace_uses_app_name_for_root_span_and_populates_root_inputs_ou
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_falls_back_to_app_id_for_root_span_name_when_app_name_is_blank(
+    mock_sessionmaker,
+    mock_repo_factory,
+    mock_db,
+    trace_instance,
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info(
+        metadata={
+            "app_id": "app1",
+            "app_name": "",
+        },
+    )
+    repo = MagicMock()
+    repo.get_by_workflow_execution.return_value = []
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    with patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()):
+        trace_instance.workflow_trace(info)
+
+    root_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="app1")
+    assert root_span_call.kwargs["attributes"]["dify_trace_id"] == info.resolved_trace_id
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
 def test_workflow_trace_reuses_upstream_parent_workflow_context_when_no_parent_node_execution_id_is_available(
     mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
 ):
@@ -422,7 +449,7 @@ def test_workflow_trace_reuses_upstream_parent_workflow_context_when_no_parent_n
 
     mock_ensure_root_span.assert_called_once_with(
         "outer-workflow-run-1",
-        root_span_name=None,
+        root_span_name="app1",
         root_span_attributes={
             SpanAttributes.INPUT_VALUE: safe_json_dumps(info.workflow_run_inputs),
             SpanAttributes.INPUT_MIME_TYPE: "application/json",
@@ -609,7 +636,7 @@ def test_workflow_trace_keeps_nested_conversation_session_while_reusing_parent_r
 
     mock_ensure_root_span.assert_called_once_with(
         "outer-workflow-run-1",
-        root_span_name=None,
+        root_span_name="app1",
         root_span_attributes={
             SpanAttributes.INPUT_VALUE: safe_json_dumps(info.workflow_run_inputs),
             SpanAttributes.INPUT_MIME_TYPE: "application/json",
