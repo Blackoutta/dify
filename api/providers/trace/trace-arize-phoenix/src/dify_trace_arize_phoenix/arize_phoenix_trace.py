@@ -182,14 +182,6 @@ def _resolve_workflow_session_id(trace_info: WorkflowTraceInfo) -> str:
     if trace_info.conversation_id:
         return trace_info.conversation_id
 
-    parent_trace_context = trace_info.metadata.get("parent_trace_context")
-    if isinstance(parent_trace_context, dict):
-        parent_session_id = parent_trace_context.get("session_id")
-        if isinstance(parent_session_id, str) and parent_session_id:
-            return parent_session_id
-
-    # Future migration: once nested workflow callers consistently pass a
-    # durable session identifier, the workflow_run_id fallback can be removed.
     return trace_info.workflow_run_id
 
 

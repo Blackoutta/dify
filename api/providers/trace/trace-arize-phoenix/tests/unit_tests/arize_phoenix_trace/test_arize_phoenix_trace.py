@@ -354,7 +354,7 @@ def test_workflow_trace_reuses_upstream_parent_context_for_nested_workflow(
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
-def test_workflow_trace_uses_parent_session_id_for_workflow_and_nodes(
+def test_workflow_trace_uses_workflow_run_id_for_workflow_and_nodes_when_nested_context_is_present(
     mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
 ):
     mock_db.engine = MagicMock()
@@ -363,7 +363,8 @@ def test_workflow_trace_uses_parent_session_id_for_workflow_and_nodes(
         metadata={
             "app_id": "app1",
             "parent_trace_context": {
-                "session_id": "parent-session-1",
+                "parent_workflow_run_id": "outer-workflow-run-1",
+                "parent_node_execution_id": "outer-node-execution-1",
             },
         },
     )
@@ -391,8 +392,8 @@ def test_workflow_trace_uses_parent_session_id_for_workflow_and_nodes(
     )
     node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool")
 
-    assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "parent-session-1"
-    assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "parent-session-1"
+    assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "r1"
+    assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "r1"
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")

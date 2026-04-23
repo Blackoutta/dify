@@ -76,18 +76,19 @@ class TestWorkflowSessionResolution:
 
         assert _resolve_workflow_session_id(info) == "conversation-1"
 
-    def test_prefers_nested_parent_session_id(self):
+    def test_uses_workflow_run_id_for_nested_parent_trace_context(self):
         info = _make_workflow_info(
             conversation_id=None,
             metadata={
                 "app_id": "app-1",
                 "parent_trace_context": {
-                    "session_id": "parent-session-1",
+                    "parent_workflow_run_id": "outer-workflow-run-1",
+                    "parent_node_execution_id": "outer-node-execution-1",
                 },
             },
         )
 
-        assert _resolve_workflow_session_id(info) == "parent-session-1"
+        assert _resolve_workflow_session_id(info) == "workflow-run-1"
 
     def test_ignores_nested_parent_conversation_id(self):
         info = _make_workflow_info(
