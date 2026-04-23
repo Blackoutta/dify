@@ -392,6 +392,16 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             query=trace_info.query or "",
         )
         workflow_session_id = _resolve_workflow_session_id(trace_info)
+        parent_workflow_run_id, parent_node_execution_id = _resolve_workflow_parent_context(trace_info)
+        logger.info(
+            "[Arize/Phoenix] Workflow session resolution: workflow_run_id=%s conversation_id=%s "
+            "parent_workflow_run_id=%s parent_node_execution_id=%s resolved_session_id=%s",
+            trace_info.workflow_run_id,
+            trace_info.conversation_id,
+            parent_workflow_run_id,
+            parent_node_execution_id,
+            workflow_session_id,
+        )
 
         root_trace_id = _resolve_workflow_root_trace_id(trace_info)
         root_carrier = self.ensure_root_span(root_trace_id)
