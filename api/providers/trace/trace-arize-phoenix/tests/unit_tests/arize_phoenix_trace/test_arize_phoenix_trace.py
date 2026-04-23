@@ -614,6 +614,68 @@ def test_workflow_trace_publishes_tool_node_parent_span_context_to_redis(
     )
 
 
+@pytest.mark.parametrize(
+    ("failing_step", "expected_message"),
+    [
+        ("inject", "inject failed"),
+        ("publish", "publish failed"),
+    ],
+)
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_cleans_up_tool_span_when_parent_context_publish_fails(
+    mock_sessionmaker,
+    mock_repo_factory,
+    mock_db,
+    trace_instance,
+    failing_step,
+    expected_message,
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info()
+    repo = MagicMock()
+    node_execution = _make_node_execution(
+        id="tool-execution-1",
+        node_execution_id="tool-execution-1",
+        node_id="tool-node-1",
+        node_type="tool",
+    )
+    repo.get_by_workflow_execution.return_value = [node_execution]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    workflow_span = MagicMock(name="workflow-span")
+    workflow_span._context_label = "workflow"
+    tool_span = MagicMock(name="tool-span")
+    tool_span._context_label = "tool"
+    trace_instance.tracer.start_span.side_effect = [workflow_span, tool_span]
+
+    inject_side_effect = None
+    if failing_step == "inject":
+        inject_side_effect = RuntimeError(expected_message)
+    else:
+        trace_instance._mock_redis_client.setex.side_effect = RuntimeError(expected_message)
+
+        def inject_side_effect(carrier):
+            carrier["traceparent"] = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance, "ensure_root_span", return_value={}),
+        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
+        patch.object(trace_instance.propagator, "inject", side_effect=inject_side_effect),
+        patch(
+            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
+            side_effect=lambda span: f"context:{span._context_label}",
+        ),
+        pytest.raises(RuntimeError, match=expected_message),
+    ):
+        trace_instance.workflow_trace(info)
+
+    tool_span.end.assert_called_once()
+    workflow_span.end.assert_called_once()
+
+
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")

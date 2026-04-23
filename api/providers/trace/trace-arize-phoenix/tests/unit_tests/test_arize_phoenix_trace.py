@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import dify_trace_arize_phoenix.arize_phoenix_trace as arize_phoenix_trace_module
+import pytest
 from dify_trace_arize_phoenix.arize_phoenix_trace import (
     _NODE_TYPE_TO_SPAN_KIND,
     PendingPhoenixParentSpanContextError,
@@ -9,6 +11,7 @@ from dify_trace_arize_phoenix.arize_phoenix_trace import (
     _get_node_span_kind,
     _phoenix_parent_span_redis_key,
     _resolve_node_parent,
+    _resolve_published_parent_span_context,
     _resolve_structured_parent_execution_id,
     _resolve_workflow_parent_context,
     _resolve_workflow_session_id,
@@ -153,6 +156,30 @@ class TestPhoenixParentSpanBridgeHelpers:
 
         assert error.parent_node_execution_id == "outer-node-execution-1"
         assert "outer-node-execution-1" in str(error)
+
+    def test_resolve_parent_span_context_rejects_payload_without_traceparent(self, monkeypatch):
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = '{"tracestate": "vendor=value"}'
+        monkeypatch.setattr(arize_phoenix_trace_module, "redis_client", mock_redis)
+
+        with pytest.raises(ValueError, match="traceparent"):
+            _resolve_published_parent_span_context("outer-node-execution-1")
+
+    @pytest.mark.parametrize(
+        "stored_payload",
+        [
+            '{"traceparent": ""}',
+            '{"traceparent": "not-a-traceparent"}',
+            '{"traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb"}',
+        ],
+    )
+    def test_resolve_parent_span_context_rejects_malformed_traceparent(self, monkeypatch, stored_payload):
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = stored_payload
+        monkeypatch.setattr(arize_phoenix_trace_module, "redis_client", mock_redis)
+
+        with pytest.raises(ValueError, match="traceparent"):
+            _resolve_published_parent_span_context("outer-node-execution-1")
 
 
 class TestWorkflowHierarchyHelpers:

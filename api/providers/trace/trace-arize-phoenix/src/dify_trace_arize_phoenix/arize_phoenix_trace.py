@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import traceback
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
@@ -20,7 +21,7 @@ from opentelemetry.sdk import trace as trace_sdk
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.semconv.attributes import exception_attributes
-from opentelemetry.trace import Span, Status, StatusCode, set_span_in_context, use_span
+from opentelemetry.trace import Span, Status, StatusCode, get_current_span, set_span_in_context, use_span
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry.util.types import AttributeValue
 from sqlalchemy.orm import sessionmaker
@@ -49,6 +50,9 @@ from models.workflow import WorkflowNodeExecutionTriggeredFrom
 logger = logging.getLogger(__name__)
 
 _PHOENIX_PARENT_SPAN_CONTEXT_TTL_SECONDS = 300
+_TRACEPARENT_PATTERN = re.compile(
+    r"^(?P<version>[0-9a-f]{2})-(?P<trace_id>[0-9a-f]{32})-(?P<span_id>[0-9a-f]{16})-(?P<flags>[0-9a-f]{2})$"
+)
 
 
 class PendingPhoenixParentSpanContextError(RuntimeError):
@@ -98,6 +102,46 @@ def _resolve_published_parent_span_context(parent_node_execution_id: str) -> dic
     if not normalized_carrier:
         raise ValueError(
             "Phoenix parent span context payload is empty: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    traceparent = normalized_carrier.get("traceparent")
+    if not isinstance(traceparent, str):
+        raise ValueError(
+            "Phoenix parent span context payload is missing traceparent: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    traceparent_match = _TRACEPARENT_PATTERN.fullmatch(traceparent)
+    if traceparent_match is None:
+        raise ValueError(
+            "Phoenix parent span context payload has invalid traceparent format: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    if traceparent_match.group("version") == "ff":
+        raise ValueError(
+            "Phoenix parent span context payload has unsupported traceparent version: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    if traceparent_match.group("trace_id") == "0" * 32:
+        raise ValueError(
+            "Phoenix parent span context payload has zero trace_id in traceparent: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    if traceparent_match.group("span_id") == "0" * 16:
+        raise ValueError(
+            "Phoenix parent span context payload has zero span_id in traceparent: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    extracted_context = TraceContextTextMapPropagator().extract(carrier=normalized_carrier)
+    extracted_span_context = get_current_span(extracted_context).get_span_context()
+    if not extracted_span_context.is_valid or not extracted_span_context.is_remote:
+        raise ValueError(
+            "Phoenix parent span context payload could not be restored into a valid parent span: "
             f"parent_node_execution_id={parent_node_execution_id}"
         )
 
@@ -511,6 +555,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         span_by_execution_id: dict[str, Span] = {}
         emitting_execution_ids: set[str] = set()
 
+        workflow_span_error: Exception | str | None = trace_info.error
         try:
             def emit_node_span(node_execution: _NodeExecutionLike) -> Span:
                 execution_id = _get_node_execution_id(node_execution)
@@ -606,13 +651,14 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                     context=workflow_span_context,
                 )
                 span_by_execution_id[execution_id] = node_span
-                if node_execution.node_type == "tool":
-                    parent_span_carrier: dict[str, str] = {}
-                    with use_span(node_span, end_on_exit=False):
-                        self.propagator.inject(carrier=parent_span_carrier)
-                    _publish_parent_span_context(execution_id, parent_span_carrier)
-
+                node_span_error: Exception | str | None = None
                 try:
+                    if node_execution.node_type == "tool":
+                        parent_span_carrier: dict[str, str] = {}
+                        with use_span(node_span, end_on_exit=False):
+                            self.propagator.inject(carrier=parent_span_carrier)
+                        _publish_parent_span_context(execution_id, parent_span_carrier)
+
                     if node_execution.node_type == "llm":
                         llm_attributes: dict[str, Any] = {
                             SpanAttributes.INPUT_VALUE: json.dumps(process_data.get("prompts", []), ensure_ascii=False),
@@ -634,8 +680,13 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                             )
                         llm_attributes.update(self._construct_llm_attributes(process_data.get("prompts", [])))
                         node_span.set_attributes(llm_attributes)
+                except Exception as e:
+                    node_span_error = e
+                    raise
                 finally:
-                    if node_execution.status == WorkflowNodeExecutionStatus.FAILED:
+                    if node_span_error is not None:
+                        set_span_status(node_span, node_span_error)
+                    elif node_execution.status == WorkflowNodeExecutionStatus.FAILED:
                         set_span_status(node_span, node_execution.error)
                     else:
                         set_span_status(node_span)
@@ -644,11 +695,11 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
 
             for node_execution in workflow_node_executions:
                 emit_node_span(node_execution)
+        except Exception as e:
+            workflow_span_error = e
+            raise
         finally:
-            if trace_info.error:
-                set_span_status(workflow_span, trace_info.error)
-            else:
-                set_span_status(workflow_span)
+            set_span_status(workflow_span, workflow_span_error)
             workflow_span.end(end_time=datetime_to_nanos(trace_info.end_time))
 
     def message_trace(self, trace_info: MessageTraceInfo):
