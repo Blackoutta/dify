@@ -114,7 +114,7 @@ class TestWorkflowSessionResolution:
 
         assert _resolve_workflow_session_id(info) == "conversation-1"
 
-    def test_uses_workflow_run_id_for_nested_parent_trace_context(self):
+    def test_uses_parent_workflow_run_id_for_nested_parent_trace_context(self):
         info = _make_workflow_info(
             conversation_id=None,
             metadata={
@@ -126,7 +126,7 @@ class TestWorkflowSessionResolution:
             },
         )
 
-        assert _resolve_workflow_session_id(info) == "workflow-run-1"
+        assert _resolve_workflow_session_id(info) == "outer-workflow-run-1"
 
     def test_falls_back_to_workflow_run_id(self):
         info = _make_workflow_info(conversation_id=None)

@@ -183,6 +183,10 @@ def _resolve_workflow_session_id(trace_info: WorkflowTraceInfo) -> str:
     if trace_info.conversation_id:
         return trace_info.conversation_id
 
+    parent_workflow_run_id, _ = _resolve_workflow_parent_context(trace_info)
+    if parent_workflow_run_id:
+        return parent_workflow_run_id
+
     return trace_info.workflow_run_id
 
 
@@ -392,9 +396,8 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         root_trace_id = _resolve_workflow_root_trace_id(trace_info)
         root_carrier = self.ensure_root_span(root_trace_id)
 
-        # Temporary Phoenix-local hierarchy handling: until upstream tracing
-        # exposes direct nested-workflow parent span wiring, reuse the resolved
-        # upstream workflow root so nested runs stay in the same trace tree.
+        # Transitional Phoenix-local fallback: keep nested workflows aligned
+        # until upstream tracing exposes explicit parent workflow session wiring.
         workflow_span_context = self.propagator.extract(carrier=root_carrier)
 
         workflow_span = self.tracer.start_span(
