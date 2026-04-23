@@ -61,7 +61,7 @@ def extract_external_trace_id_from_args(args: Mapping[str, Any]):
     return {}
 
 
-def extract_parent_trace_context_from_args(args: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def extract_parent_trace_context_from_args(args: Mapping[str, Any]) -> dict[str, dict[str, str]]:
     """
     Extract 'parent_trace_context' from args.
 
@@ -72,16 +72,18 @@ def extract_parent_trace_context_from_args(args: Mapping[str, Any]) -> dict[str,
     if not isinstance(parent_trace_context, Mapping):
         return {}
 
-    if "parent_workflow_run_id" not in parent_trace_context:
+    parent_workflow_run_id = parent_trace_context.get("parent_workflow_run_id")
+    if not isinstance(parent_workflow_run_id, str):
         return {}
 
-    if "parent_node_execution_id" not in parent_trace_context:
+    parent_node_execution_id = parent_trace_context.get("parent_node_execution_id")
+    if not isinstance(parent_node_execution_id, str):
         return {}
 
     return {
         "parent_trace_context": {
-            "parent_workflow_run_id": parent_trace_context["parent_workflow_run_id"],
-            "parent_node_execution_id": parent_trace_context["parent_node_execution_id"],
+            "parent_workflow_run_id": parent_workflow_run_id,
+            "parent_node_execution_id": parent_node_execution_id,
         }
     }
 

@@ -123,6 +123,24 @@ class TestTraceIdHelper:
                 },
                 {},
             ),
+            (
+                {
+                    "parent_trace_context": {
+                        "parent_workflow_run_id": 123,
+                        "parent_node_execution_id": "node-execution-1",
+                    }
+                },
+                {},
+            ),
+            (
+                {
+                    "parent_trace_context": {
+                        "parent_workflow_run_id": "workflow-run-1",
+                        "parent_node_execution_id": None,
+                    }
+                },
+                {},
+            ),
             ({}, {}),
         ],
     )
