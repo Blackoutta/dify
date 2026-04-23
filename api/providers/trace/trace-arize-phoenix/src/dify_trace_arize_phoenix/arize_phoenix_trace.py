@@ -201,33 +201,93 @@ class _NodeExecutionLike(Protocol):
     id: str
     node_execution_id: str
     node_id: str
+    node_type: str
     predecessor_node_id: str | None
+    iteration_id: str | None
+    loop_id: str | None
+
+
+_PHOENIX_STRUCTURED_NODE_TYPES = frozenset({"start", "end", "loop", "iteration"})
+
+
+def _get_node_execution_id(node_execution: _NodeExecutionLike) -> str:
+    """Return the stable execution identifier for a workflow node execution."""
+    return str(getattr(node_execution, "id", None) or node_execution.node_execution_id)
+
+
+def _build_execution_id_by_node_id(node_executions: Sequence[_NodeExecutionLike]) -> dict[str, str]:
+    """Index unique workflow graph node ids by execution id.
+
+    This Phoenix-local hierarchy reconstruction intentionally drops ambiguous
+    node ids instead of guessing based on repository order. That keeps parent
+    selection deterministic until upstream tracing exposes explicit parent span
+    data for repeated executions.
+    """
+    execution_id_by_node_id: dict[str, str] = {}
+    ambiguous_node_ids: set[str] = set()
+
+    for node_execution in node_executions:
+        node_id = node_execution.node_id
+        if not isinstance(node_id, str):
+            continue
+        execution_id = _get_node_execution_id(node_execution)
+
+        if node_id in ambiguous_node_ids:
+            continue
+
+        existing_execution_id = execution_id_by_node_id.get(node_id)
+        if existing_execution_id is None:
+            execution_id_by_node_id[node_id] = execution_id
+            continue
+
+        if existing_execution_id != execution_id:
+            ambiguous_node_ids.add(node_id)
+            execution_id_by_node_id.pop(node_id, None)
+
+    return execution_id_by_node_id
 
 
 def _build_graph_parent_index(node_executions: Sequence[_NodeExecutionLike]) -> dict[str, str]:
     """Build an execution-id parent index from predecessor node ids."""
-    execution_id_by_node_id = {
-        node_execution.node_id: getattr(node_execution, "id", None) or node_execution.node_execution_id
-        for node_execution in node_executions
-    }
+    execution_id_by_node_id = _build_execution_id_by_node_id(node_executions)
     graph_parent_index: dict[str, str] = {}
 
     for node_execution in node_executions:
         predecessor_node_id = node_execution.predecessor_node_id
-        if not predecessor_node_id:
+        if not isinstance(predecessor_node_id, str):
             continue
 
         predecessor_execution_id = execution_id_by_node_id.get(predecessor_node_id)
         if predecessor_execution_id is not None:
-            execution_id = getattr(node_execution, "id", None) or node_execution.node_execution_id
+            execution_id = _get_node_execution_id(node_execution)
             graph_parent_index[execution_id] = predecessor_execution_id
 
     return graph_parent_index
 
 
+def _resolve_structured_parent_execution_id(
+    node_execution: _NodeExecutionLike,
+    execution_id_by_node_id: Mapping[str, str],
+) -> str | None:
+    """Resolve Phoenix-local structured parents from loop/iteration node ids."""
+    if node_execution.node_type not in _PHOENIX_STRUCTURED_NODE_TYPES:
+        return None
+
+    for enclosing_node_id in (node_execution.iteration_id, node_execution.loop_id):
+        if not isinstance(enclosing_node_id, str):
+            continue
+
+        enclosing_execution_id = execution_id_by_node_id.get(enclosing_node_id)
+        if enclosing_execution_id is not None:
+            return enclosing_execution_id
+
+    return None
+
+
 def _resolve_node_parent(
     execution_id: str,
     predecessor_execution_id: str | None,
+    structured_parent_execution_id: str | None,
     span_by_execution_id: Mapping[str, Span],
     graph_parent_index: Mapping[str, str],
     workflow_span: Span,
@@ -243,6 +303,11 @@ def _resolve_node_parent(
         graph_parent_span = span_by_execution_id.get(graph_parent_execution_id)
         if graph_parent_span is not None:
             return graph_parent_span
+
+    if structured_parent_execution_id is not None:
+        structured_parent_span = span_by_execution_id.get(structured_parent_execution_id)
+        if structured_parent_span is not None:
+            return structured_parent_span
 
     return workflow_span
 
@@ -353,16 +418,47 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         workflow_node_executions = workflow_node_execution_repository.get_by_workflow_execution(
             workflow_execution_id=trace_info.workflow_run_id
         )
+        execution_id_by_node_id = _build_execution_id_by_node_id(workflow_node_executions)
+        graph_parent_index = _build_graph_parent_index(workflow_node_executions)
+        node_execution_by_execution_id = {
+            _get_node_execution_id(node_execution): node_execution for node_execution in workflow_node_executions
+        }
+        span_by_execution_id: dict[str, Span] = {}
+        emitting_execution_ids: set[str] = set()
 
         try:
-            for node_execution in workflow_node_executions:
+            def emit_node_span(node_execution: _NodeExecutionLike) -> Span:
+                execution_id = _get_node_execution_id(node_execution)
+                existing_span = span_by_execution_id.get(execution_id)
+                if existing_span is not None:
+                    return existing_span
+
+                graph_parent_execution_id = graph_parent_index.get(execution_id)
+                structured_parent_execution_id = _resolve_structured_parent_execution_id(
+                    node_execution, execution_id_by_node_id
+                )
+
+                if execution_id not in emitting_execution_ids:
+                    emitting_execution_ids.add(execution_id)
+                    try:
+                        for parent_execution_id in (graph_parent_execution_id, structured_parent_execution_id):
+                            if parent_execution_id is None or parent_execution_id == execution_id:
+                                continue
+                            if parent_execution_id in span_by_execution_id:
+                                continue
+                            parent_node_execution = node_execution_by_execution_id.get(parent_execution_id)
+                            if parent_node_execution is not None:
+                                emit_node_span(parent_node_execution)
+                    finally:
+                        emitting_execution_ids.discard(execution_id)
+
                 tenant_id = trace_info.tenant_id  # Use from trace_info instead
                 app_id = trace_info.metadata.get("app_id")  # Use from trace_info instead
                 inputs_value = node_execution.inputs or {}
                 outputs_value = node_execution.outputs or {}
 
                 created_at = node_execution.created_at or datetime.now()
-                elapsed_time = node_execution.elapsed_time
+                elapsed_time = node_execution.elapsed_time or 0
                 finished_at = created_at + timedelta(seconds=elapsed_time)
 
                 process_data = node_execution.process_data or {}
@@ -401,7 +497,15 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                         node_metadata["prompt_tokens"] = usage_data.get("prompt_tokens", 0)
                         node_metadata["completion_tokens"] = usage_data.get("completion_tokens", 0)
 
-                workflow_span_context = set_span_in_context(workflow_span)
+                parent_span = _resolve_node_parent(
+                    execution_id=execution_id,
+                    predecessor_execution_id=None,
+                    structured_parent_execution_id=structured_parent_execution_id,
+                    span_by_execution_id=span_by_execution_id,
+                    graph_parent_index=graph_parent_index,
+                    workflow_span=workflow_span,
+                )
+                workflow_span_context = set_span_in_context(parent_span)
                 node_span = self.tracer.start_span(
                     name=node_execution.node_type,
                     attributes={
@@ -416,6 +520,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                     start_time=datetime_to_nanos(created_at),
                     context=workflow_span_context,
                 )
+                span_by_execution_id[execution_id] = node_span
 
                 try:
                     if node_execution.node_type == "llm":
@@ -445,6 +550,10 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                     else:
                         set_span_status(node_span)
                     node_span.end(end_time=datetime_to_nanos(finished_at))
+                return node_span
+
+            for node_execution in workflow_node_executions:
+                emit_node_span(node_execution)
         finally:
             if trace_info.error:
                 set_span_status(workflow_span, trace_info.error)

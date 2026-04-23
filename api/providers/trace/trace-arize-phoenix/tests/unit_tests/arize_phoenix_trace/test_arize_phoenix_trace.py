@@ -82,6 +82,32 @@ def _get_start_span_call(start_span_mock, *, span_name: str):
     raise AssertionError(f"Could not find start_span call with name={span_name!r}")
 
 
+def _make_node_execution(**kwargs):
+    defaults = {
+        "node_type": "tool",
+        "status": "succeeded",
+        "inputs": {},
+        "outputs": {},
+        "created_at": _dt(),
+        "elapsed_time": 1.0,
+        "process_data": {},
+        "metadata": {},
+        "title": "Node",
+        "id": "node-execution-1",
+        "node_execution_id": "node-execution-1",
+        "node_id": "node-1",
+        "predecessor_node_id": None,
+        "iteration_id": None,
+        "loop_id": None,
+        "error": None,
+    }
+    defaults.update(kwargs)
+    node_execution = MagicMock()
+    for key, value in defaults.items():
+        setattr(node_execution, key, value)
+    return node_execution
+
+
 # --- Utility Function Tests ---
 
 
@@ -394,6 +420,122 @@ def test_workflow_trace_uses_workflow_run_id_for_workflow_and_nodes_when_nested_
 
     assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "r1"
     assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "r1"
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_parents_serial_nodes_to_resolved_predecessor_span(
+    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info()
+    repo = MagicMock()
+    second_node = _make_node_execution(
+        id="node-execution-2",
+        node_execution_id="node-execution-2",
+        node_id="node-2",
+        node_type="llm",
+        predecessor_node_id="node-1",
+        process_data={
+            "prompts": [{"role": "user", "content": "hi"}],
+            "model_provider": "openai",
+            "model_name": "gpt-4",
+        },
+    )
+    first_node = _make_node_execution(
+        id="node-execution-1",
+        node_execution_id="node-execution-1",
+        node_id="node-1",
+        node_type="tool",
+    )
+    repo.get_by_workflow_execution.return_value = [second_node, first_node]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    workflow_span = MagicMock(name="workflow-span")
+    workflow_span._context_label = "workflow"
+    first_node_span = MagicMock(name="first-node-span")
+    first_node_span._context_label = "node-1"
+    second_node_span = MagicMock(name="second-node-span")
+    second_node_span._context_label = "node-2"
+    trace_instance.tracer.start_span.side_effect = [workflow_span, first_node_span, second_node_span]
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance, "ensure_root_span", return_value={}),
+        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
+        patch(
+            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
+            side_effect=lambda span: f"context:{span._context_label}",
+        ),
+    ):
+        trace_instance.workflow_trace(info)
+
+    first_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool")
+    second_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm")
+    assert first_node_call.kwargs["context"] == "context:workflow"
+    assert second_node_call.kwargs["context"] == "context:node-1"
+
+
+@pytest.mark.parametrize(
+    ("enclosing_node_type", "structured_field"),
+    [
+        ("loop", "loop_id"),
+        ("iteration", "iteration_id"),
+    ],
+)
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_parents_structured_start_nodes_to_enclosing_structure_span(
+    mock_sessionmaker,
+    mock_repo_factory,
+    mock_db,
+    trace_instance,
+    enclosing_node_type,
+    structured_field,
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info()
+    repo = MagicMock()
+    enclosing_node = _make_node_execution(
+        id=f"{enclosing_node_type}-execution-1",
+        node_execution_id=f"{enclosing_node_type}-execution-1",
+        node_id=f"{enclosing_node_type}-node-1",
+        node_type=enclosing_node_type,
+    )
+    structured_kwargs = {structured_field: f"{enclosing_node_type}-node-1"}
+    start_node = _make_node_execution(
+        id="start-execution-1",
+        node_execution_id="start-execution-1",
+        node_id="start-node-1",
+        node_type="start",
+        **structured_kwargs,
+    )
+    repo.get_by_workflow_execution.return_value = [start_node, enclosing_node]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    workflow_span = MagicMock(name="workflow-span")
+    workflow_span._context_label = "workflow"
+    enclosing_node_span = MagicMock(name="enclosing-node-span")
+    enclosing_node_span._context_label = enclosing_node_type
+    start_node_span = MagicMock(name="start-node-span")
+    start_node_span._context_label = "start"
+    trace_instance.tracer.start_span.side_effect = [workflow_span, enclosing_node_span, start_node_span]
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance, "ensure_root_span", return_value={}),
+        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
+        patch(
+            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
+            side_effect=lambda span: f"context:{span._context_label}",
+        ),
+    ):
+        trace_instance.workflow_trace(info)
+
+    start_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="start")
+    assert start_node_call.kwargs["context"] == f"context:{enclosing_node_type}"
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")

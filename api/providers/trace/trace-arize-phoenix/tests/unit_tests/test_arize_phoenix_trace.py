@@ -173,6 +173,7 @@ class TestWorkflowHierarchyHelpers:
         parent = _resolve_node_parent(
             execution_id="node-execution-2",
             predecessor_execution_id="node-execution-1",
+            structured_parent_execution_id=None,
             span_by_execution_id={
                 "node-execution-1": predecessor_span,
                 "node-execution-0": graph_parent_span,
@@ -192,6 +193,7 @@ class TestWorkflowHierarchyHelpers:
         parent = _resolve_node_parent(
             execution_id="node-execution-2",
             predecessor_execution_id="missing-predecessor",
+            structured_parent_execution_id=None,
             span_by_execution_id={
                 "node-execution-0": graph_parent_span,
             },
@@ -209,6 +211,7 @@ class TestWorkflowHierarchyHelpers:
         parent = _resolve_node_parent(
             execution_id="node-execution-2",
             predecessor_execution_id=None,
+            structured_parent_execution_id=None,
             span_by_execution_id={},
             graph_parent_index={},
             workflow_span=workflow_span,
