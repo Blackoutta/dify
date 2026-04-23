@@ -507,7 +507,20 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             workflow_parent_carrier = _resolve_published_parent_span_context(parent_node_execution_id)
         else:
             root_trace_id = _resolve_workflow_root_trace_id(trace_info)
-            workflow_parent_carrier = self.ensure_root_span(root_trace_id)
+            workflow_root_span_name = trace_info.metadata.get("app_name")
+            if not isinstance(workflow_root_span_name, str) or not workflow_root_span_name.strip():
+                workflow_root_span_name = None
+
+            workflow_parent_carrier = self.ensure_root_span(
+                root_trace_id,
+                root_span_name=workflow_root_span_name,
+                root_span_attributes={
+                    SpanAttributes.INPUT_VALUE: safe_json_dumps(trace_info.workflow_run_inputs),
+                    SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
+                    SpanAttributes.OUTPUT_VALUE: safe_json_dumps(trace_info.workflow_run_outputs),
+                    SpanAttributes.OUTPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
+                },
+            )
 
         workflow_span_context = self.propagator.extract(carrier=workflow_parent_carrier)
 
@@ -1062,16 +1075,28 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         finally:
             span.end(end_time=datetime_to_nanos(trace_info.end_time))
 
-    def ensure_root_span(self, dify_trace_id: str | None):
+    def ensure_root_span(
+        self,
+        dify_trace_id: str | None,
+        *,
+        root_span_name: str | None = None,
+        root_span_attributes: Mapping[str, AttributeValue] | None = None,
+    ):
         """Ensure a unique root span exists for the given Dify trace ID."""
         trace_key = str(dify_trace_id)
         if trace_key not in self.dify_trace_ids:
             carrier: dict[str, str] = {}
 
-            root_span = self.tracer.start_span(name="Dify")
-            root_span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.CHAIN.value)
-            root_span.set_attribute("dify_project_name", str(self.project))
-            root_span.set_attribute("dify_trace_id", trace_key)
+            span_name = root_span_name.strip() if isinstance(root_span_name, str) and root_span_name.strip() else "Dify"
+            root_span_attributes_dict: dict[str, AttributeValue] = {
+                SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+                "dify_project_name": str(self.project),
+                "dify_trace_id": trace_key,
+            }
+            if root_span_attributes:
+                root_span_attributes_dict.update(root_span_attributes)
+
+            root_span = self.tracer.start_span(name=span_name, attributes=root_span_attributes_dict)
 
             with use_span(root_span, end_on_exit=False):
                 self.propagator.inject(carrier=carrier)

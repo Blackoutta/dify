@@ -336,12 +336,57 @@ def test_workflow_trace_uses_canonical_root_context_for_top_level_workflow(
     ):
         trace_instance.workflow_trace(info)
 
-    mock_ensure_root_span.assert_called_once_with(info.resolved_trace_id)
+    mock_ensure_root_span.assert_called_once_with(
+        info.resolved_trace_id,
+        root_span_name=None,
+        root_span_attributes={
+            SpanAttributes.INPUT_VALUE: safe_json_dumps(info.workflow_run_inputs),
+            SpanAttributes.INPUT_MIME_TYPE: "application/json",
+            SpanAttributes.OUTPUT_VALUE: safe_json_dumps(info.workflow_run_outputs),
+            SpanAttributes.OUTPUT_MIME_TYPE: "application/json",
+        },
+    )
     mock_extract.assert_called_once_with(carrier=root_carrier)
     workflow_span_call = _get_start_span_call(
         trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
     )
     assert workflow_span_call.kwargs["context"] is root_context
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_uses_app_name_for_root_span_and_populates_root_inputs_outputs(
+    mock_sessionmaker,
+    mock_repo_factory,
+    mock_db,
+    trace_instance,
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info(
+        workflow_run_inputs={"prompt": "hello"},
+        workflow_run_outputs={"result": "world"},
+        metadata={
+            "app_id": "app1",
+            "app_name": "Workflow Name",
+        },
+    )
+    repo = MagicMock()
+    repo.get_by_workflow_execution.return_value = []
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    with patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()):
+        trace_instance.workflow_trace(info)
+
+    root_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="Workflow Name")
+    assert root_span_call.kwargs["attributes"][SpanAttributes.INPUT_VALUE] == safe_json_dumps(
+        info.workflow_run_inputs
+    )
+    assert root_span_call.kwargs["attributes"][SpanAttributes.OUTPUT_VALUE] == safe_json_dumps(
+        info.workflow_run_outputs
+    )
+    assert root_span_call.kwargs["attributes"][SpanAttributes.INPUT_MIME_TYPE] == "application/json"
+    assert root_span_call.kwargs["attributes"][SpanAttributes.OUTPUT_MIME_TYPE] == "application/json"
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
@@ -375,7 +420,16 @@ def test_workflow_trace_reuses_upstream_parent_workflow_context_when_no_parent_n
     ):
         trace_instance.workflow_trace(info)
 
-    mock_ensure_root_span.assert_called_once_with("outer-workflow-run-1")
+    mock_ensure_root_span.assert_called_once_with(
+        "outer-workflow-run-1",
+        root_span_name=None,
+        root_span_attributes={
+            SpanAttributes.INPUT_VALUE: safe_json_dumps(info.workflow_run_inputs),
+            SpanAttributes.INPUT_MIME_TYPE: "application/json",
+            SpanAttributes.OUTPUT_VALUE: safe_json_dumps(info.workflow_run_outputs),
+            SpanAttributes.OUTPUT_MIME_TYPE: "application/json",
+        },
+    )
     mock_extract.assert_called_once_with(carrier=parent_carrier)
     workflow_span_call = _get_start_span_call(
         trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
@@ -553,7 +607,16 @@ def test_workflow_trace_keeps_nested_conversation_session_while_reusing_parent_r
     ):
         trace_instance.workflow_trace(info)
 
-    mock_ensure_root_span.assert_called_once_with("outer-workflow-run-1")
+    mock_ensure_root_span.assert_called_once_with(
+        "outer-workflow-run-1",
+        root_span_name=None,
+        root_span_attributes={
+            SpanAttributes.INPUT_VALUE: safe_json_dumps(info.workflow_run_inputs),
+            SpanAttributes.INPUT_MIME_TYPE: "application/json",
+            SpanAttributes.OUTPUT_VALUE: safe_json_dumps(info.workflow_run_outputs),
+            SpanAttributes.OUTPUT_MIME_TYPE: "application/json",
+        },
+    )
     mock_extract.assert_called_once_with(carrier=parent_carrier)
     workflow_span_call = _get_start_span_call(
         trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
@@ -1091,3 +1154,30 @@ def test_api_check_success(trace_instance):
 def test_ensure_root_span_basic(trace_instance):
     trace_instance.ensure_root_span("tid")
     assert "tid" in trace_instance.dify_trace_ids
+
+
+def test_ensure_root_span_uses_custom_name_and_attributes(trace_instance):
+    root_attributes = {
+        SpanAttributes.INPUT_VALUE: '{"input":"value"}',
+        SpanAttributes.OUTPUT_VALUE: '{"output":"value"}',
+    }
+
+    trace_instance.ensure_root_span("tid", root_span_name="Workflow Name", root_span_attributes=root_attributes)
+
+    trace_instance.tracer.start_span.assert_called_once_with(
+        name="Workflow Name",
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: "CHAIN",
+            "dify_project_name": "p",
+            "dify_trace_id": "tid",
+            SpanAttributes.INPUT_VALUE: '{"input":"value"}',
+            SpanAttributes.OUTPUT_VALUE: '{"output":"value"}',
+        },
+    )
+
+
+def test_ensure_root_span_falls_back_to_dify_name_when_custom_name_is_blank(trace_instance):
+    trace_instance.ensure_root_span("tid", root_span_name=" ")
+
+    trace_instance.tracer.start_span.assert_called_once()
+    assert trace_instance.tracer.start_span.call_args.kwargs["name"] == "Dify"
