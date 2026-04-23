@@ -3,13 +3,15 @@ from unittest.mock import MagicMock
 
 from dify_trace_arize_phoenix.arize_phoenix_trace import (
     _NODE_TYPE_TO_SPAN_KIND,
+    _build_graph_parent_index,
     _get_node_span_kind,
+    _resolve_node_parent,
     _resolve_workflow_parent_context,
     _resolve_workflow_session_id,
 )
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 
-from core.ops.entities.trace_entity import WorkflowTraceInfo
+from core.ops.entities.trace_entity import WorkflowNodeTraceInfo, WorkflowTraceInfo
 from graphon.enums import BUILT_IN_NODE_TYPES, BuiltinNodeTypes
 
 
@@ -36,6 +38,26 @@ def _make_workflow_info(**kwargs) -> WorkflowTraceInfo:
     }
     defaults.update(kwargs)
     return WorkflowTraceInfo(**defaults)
+
+
+def _make_node_info(**kwargs) -> WorkflowNodeTraceInfo:
+    defaults = {
+        "workflow_id": "workflow-1",
+        "workflow_run_id": "workflow-run-1",
+        "tenant_id": "tenant-1",
+        "node_execution_id": "node-execution-1",
+        "node_id": "node-1",
+        "node_type": "tool",
+        "title": "Node 1",
+        "status": "succeeded",
+        "elapsed_time": 1.0,
+        "index": 1,
+        "metadata": {"app_id": "app-1"},
+        "start_time": _dt(),
+        "end_time": _dt() + timedelta(seconds=1),
+    }
+    defaults.update(kwargs)
+    return WorkflowNodeTraceInfo(**defaults)
 
 
 class TestGetNodeSpanKind:
@@ -113,3 +135,83 @@ class TestWorkflowSessionResolution:
         info.resolved_parent_context = ("outer-workflow-run-1", "outer-node-execution-1")
 
         assert _resolve_workflow_parent_context(info) == info.resolved_parent_context
+
+
+class TestWorkflowHierarchyHelpers:
+    def test_build_graph_parent_index_uses_predecessor_nodes_without_order_heuristics(self):
+        later_node = _make_node_info(
+            node_execution_id="node-execution-3",
+            node_id="node-3",
+            predecessor_node_id="node-2",
+            index=3,
+        )
+        root_node = _make_node_info(
+            node_execution_id="node-execution-1",
+            node_id="node-1",
+            predecessor_node_id=None,
+            index=1,
+        )
+        middle_node = _make_node_info(
+            node_execution_id="node-execution-2",
+            node_id="node-2",
+            predecessor_node_id="node-1",
+            index=2,
+        )
+
+        graph_parent_index = _build_graph_parent_index([later_node, root_node, middle_node])
+
+        assert graph_parent_index == {
+            "node-execution-2": "node-execution-1",
+            "node-execution-3": "node-execution-2",
+        }
+
+    def test_resolve_node_parent_prefers_predecessor_span(self):
+        workflow_span = MagicMock(name="workflow-span")
+        predecessor_span = MagicMock(name="predecessor-span")
+        graph_parent_span = MagicMock(name="graph-parent-span")
+
+        parent = _resolve_node_parent(
+            execution_id="node-execution-2",
+            predecessor_execution_id="node-execution-1",
+            span_by_execution_id={
+                "node-execution-1": predecessor_span,
+                "node-execution-0": graph_parent_span,
+            },
+            graph_parent_index={
+                "node-execution-2": "node-execution-0",
+            },
+            workflow_span=workflow_span,
+        )
+
+        assert parent is predecessor_span
+
+    def test_resolve_node_parent_falls_back_to_graph_parent_span(self):
+        workflow_span = MagicMock(name="workflow-span")
+        graph_parent_span = MagicMock(name="graph-parent-span")
+
+        parent = _resolve_node_parent(
+            execution_id="node-execution-2",
+            predecessor_execution_id="missing-predecessor",
+            span_by_execution_id={
+                "node-execution-0": graph_parent_span,
+            },
+            graph_parent_index={
+                "node-execution-2": "node-execution-0",
+            },
+            workflow_span=workflow_span,
+        )
+
+        assert parent is graph_parent_span
+
+    def test_resolve_node_parent_falls_back_to_workflow_span(self):
+        workflow_span = MagicMock(name="workflow-span")
+
+        parent = _resolve_node_parent(
+            execution_id="node-execution-2",
+            predecessor_execution_id=None,
+            span_by_execution_id={},
+            graph_parent_index={},
+            workflow_span=workflow_span,
+        )
+
+        assert parent is workflow_span

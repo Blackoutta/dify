@@ -2,8 +2,9 @@ import json
 import logging
 import os
 import traceback
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Any, Union, cast
+from typing import Any, Protocol, Union, cast
 from urllib.parse import urlparse
 
 from openinference.semconv.trace import (
@@ -194,6 +195,56 @@ def _resolve_workflow_root_trace_id(trace_info: WorkflowTraceInfo) -> str:
     """Resolve the canonical root trace ID for Phoenix workflow spans."""
     trace_correlation_override, _ = _resolve_workflow_parent_context(trace_info)
     return trace_correlation_override or trace_info.resolved_trace_id or trace_info.workflow_run_id
+
+
+class _NodeExecutionLike(Protocol):
+    id: str
+    node_execution_id: str
+    node_id: str
+    predecessor_node_id: str | None
+
+
+def _build_graph_parent_index(node_executions: Sequence[_NodeExecutionLike]) -> dict[str, str]:
+    """Build an execution-id parent index from predecessor node ids."""
+    execution_id_by_node_id = {
+        node_execution.node_id: getattr(node_execution, "id", None) or node_execution.node_execution_id
+        for node_execution in node_executions
+    }
+    graph_parent_index: dict[str, str] = {}
+
+    for node_execution in node_executions:
+        predecessor_node_id = node_execution.predecessor_node_id
+        if not predecessor_node_id:
+            continue
+
+        predecessor_execution_id = execution_id_by_node_id.get(predecessor_node_id)
+        if predecessor_execution_id is not None:
+            execution_id = getattr(node_execution, "id", None) or node_execution.node_execution_id
+            graph_parent_index[execution_id] = predecessor_execution_id
+
+    return graph_parent_index
+
+
+def _resolve_node_parent(
+    execution_id: str,
+    predecessor_execution_id: str | None,
+    span_by_execution_id: Mapping[str, Span],
+    graph_parent_index: Mapping[str, str],
+    workflow_span: Span,
+) -> Span:
+    """Resolve the parent span for a workflow node execution."""
+    if predecessor_execution_id is not None:
+        predecessor_span = span_by_execution_id.get(predecessor_execution_id)
+        if predecessor_span is not None:
+            return predecessor_span
+
+    graph_parent_execution_id = graph_parent_index.get(execution_id)
+    if graph_parent_execution_id is not None:
+        graph_parent_span = span_by_execution_id.get(graph_parent_execution_id)
+        if graph_parent_span is not None:
+            return graph_parent_span
+
+    return workflow_span
 
 
 class ArizePhoenixDataTrace(BaseTraceInstance):
