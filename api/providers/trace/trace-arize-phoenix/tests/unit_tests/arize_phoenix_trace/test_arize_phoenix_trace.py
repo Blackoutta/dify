@@ -295,6 +295,8 @@ def test_workflow_trace_uses_extracted_root_context(mock_sessionmaker, mock_repo
         trace_instance.workflow_trace(info)
 
     mock_extract.assert_called_once_with(carrier=trace_instance.carrier)
+    assert trace_instance.tracer.start_span.call_args_list[0].kwargs["name"] == "Dify"
+    assert trace_instance.tracer.start_span.call_args_list[0].kwargs["context"] is root_context
     assert trace_instance.tracer.start_span.call_args_list[1].kwargs["context"] is root_context
 
 
