@@ -425,6 +425,56 @@ def test_workflow_trace_uses_workflow_run_id_for_workflow_and_nodes_when_nested_
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_keeps_nested_conversation_session_while_reusing_parent_root_context(
+    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info(
+        conversation_id="conversation-1",
+        message_id="message-1",
+        workflow_run_id="workflow-run-1",
+        metadata={
+            "app_id": "app1",
+            "parent_trace_context": {
+                "parent_workflow_run_id": "outer-workflow-run-1",
+                "parent_node_execution_id": "outer-node-execution-1",
+            },
+        },
+    )
+    repo = MagicMock()
+    node_execution = _make_node_execution(
+        id="node-execution-1",
+        node_execution_id="node-execution-1",
+        node_id="node-1",
+        node_type="tool",
+    )
+    repo.get_by_workflow_execution.return_value = [node_execution]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    parent_carrier = {}
+    parent_context = object()
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance, "ensure_root_span", return_value=parent_carrier) as mock_ensure_root_span,
+        patch.object(trace_instance.propagator, "extract", return_value=parent_context) as mock_extract,
+    ):
+        trace_instance.workflow_trace(info)
+
+    mock_ensure_root_span.assert_called_once_with("outer-workflow-run-1")
+    mock_extract.assert_called_once_with(carrier=parent_carrier)
+    workflow_span_call = _get_start_span_call(
+        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
+    )
+    node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool")
+    assert workflow_span_call.kwargs["context"] is parent_context
+    assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-1"
+    assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-1"
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
 def test_workflow_trace_parents_serial_nodes_to_resolved_predecessor_span(
     mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
 ):
@@ -627,6 +677,74 @@ def test_workflow_trace_keeps_duplicate_body_node_children_under_enclosing_struc
 
     child_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm")
     assert child_node_call.kwargs["context"] == f"context:{enclosing_node_type}"
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_falls_back_to_workflow_span_for_parallel_like_ambiguous_predecessors(
+    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info()
+    repo = MagicMock()
+    child_node = _make_node_execution(
+        id="child-execution-1",
+        node_execution_id="child-execution-1",
+        node_id="child-node-1",
+        node_type="llm",
+        predecessor_node_id="parallel-node-1",
+        process_data={
+            "prompts": [{"role": "user", "content": "hi"}],
+            "model_provider": "openai",
+            "model_name": "gpt-4",
+        },
+    )
+    first_parallel_node = _make_node_execution(
+        id="parallel-execution-1",
+        node_execution_id="parallel-execution-1",
+        node_id="parallel-node-1",
+        node_type="tool",
+        parallel_id="parallel-1",
+    )
+    second_parallel_node = _make_node_execution(
+        id="parallel-execution-2",
+        node_execution_id="parallel-execution-2",
+        node_id="parallel-node-1",
+        node_type="tool",
+        parallel_id="parallel-2",
+    )
+    repo.get_by_workflow_execution.return_value = [child_node, first_parallel_node, second_parallel_node]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    workflow_span = MagicMock(name="workflow-span")
+    workflow_span._context_label = "workflow"
+    child_node_span = MagicMock(name="child-node-span")
+    child_node_span._context_label = "child"
+    first_parallel_node_span = MagicMock(name="first-parallel-node-span")
+    first_parallel_node_span._context_label = "parallel-1"
+    second_parallel_node_span = MagicMock(name="second-parallel-node-span")
+    second_parallel_node_span._context_label = "parallel-2"
+    trace_instance.tracer.start_span.side_effect = [
+        workflow_span,
+        child_node_span,
+        first_parallel_node_span,
+        second_parallel_node_span,
+    ]
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance, "ensure_root_span", return_value={}),
+        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
+        patch(
+            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
+            side_effect=lambda span: f"context:{span._context_label}",
+        ),
+    ):
+        trace_instance.workflow_trace(info)
+
+    child_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm")
+    assert child_node_call.kwargs["context"] == "context:workflow"
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")

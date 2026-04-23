@@ -99,9 +99,9 @@ class TestWorkflowSessionResolution:
 
         assert _resolve_workflow_session_id(info) == "conversation-1"
 
-    def test_uses_workflow_run_id_for_nested_parent_trace_context(self):
+    def test_nested_workflow_keeps_own_conversation_id_when_parent_context_exists(self):
         info = _make_workflow_info(
-            conversation_id=None,
+            conversation_id="conversation-1",
             metadata={
                 "app_id": "app-1",
                 "parent_trace_context": {
@@ -111,15 +111,16 @@ class TestWorkflowSessionResolution:
             },
         )
 
-        assert _resolve_workflow_session_id(info) == "workflow-run-1"
+        assert _resolve_workflow_session_id(info) == "conversation-1"
 
-    def test_ignores_nested_parent_conversation_id(self):
+    def test_uses_workflow_run_id_for_nested_parent_trace_context(self):
         info = _make_workflow_info(
             conversation_id=None,
             metadata={
                 "app_id": "app-1",
                 "parent_trace_context": {
-                    "conversation_id": "parent-conversation-1",
+                    "parent_workflow_run_id": "outer-workflow-run-1",
+                    "parent_node_execution_id": "outer-node-execution-1",
                 },
             },
         )
@@ -165,6 +166,32 @@ class TestWorkflowHierarchyHelpers:
             "node-execution-2": "node-execution-1",
             "node-execution-3": "node-execution-2",
         }
+
+    def test_build_graph_parent_index_drops_ambiguous_parallel_like_predecessors(self):
+        first_parallel_node = _make_node_info(
+            node_execution_id="parallel-node-execution-1",
+            node_id="parallel-node-1",
+            predecessor_node_id=None,
+            index=1,
+            parallel_id="parallel-1",
+        )
+        second_parallel_node = _make_node_info(
+            node_execution_id="parallel-node-execution-2",
+            node_id="parallel-node-1",
+            predecessor_node_id=None,
+            index=2,
+            parallel_id="parallel-2",
+        )
+        child_node = _make_node_info(
+            node_execution_id="child-node-execution-1",
+            node_id="child-node-1",
+            predecessor_node_id="parallel-node-1",
+            index=3,
+        )
+
+        graph_parent_index = _build_graph_parent_index([child_node, first_parallel_node, second_parallel_node])
+
+        assert graph_parent_index == {}
 
     def test_resolve_node_parent_prefers_predecessor_span(self):
         workflow_span = MagicMock(name="workflow-span")
