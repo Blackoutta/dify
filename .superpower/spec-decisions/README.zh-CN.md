@@ -101,6 +101,16 @@
 - 阶段二再单独设计 `outer_node_execution_id` 的暴露方式
 - 不把 session 正确性和 parent span 正确性强行塞进同一个补丁
 
+### 0007. 跨仓库的 Workflow-Tool Parent Context 透传方案
+
+文件：`0007-cross-repo-workflow-tool-parent-context.md`
+
+定义这次跨仓库改造的所有权边界：
+
+- Graphon 负责 tool runtime contract 和执行上下文暴露
+- Dify 负责把 runtime 上下文翻译成 runtime parameters 与 tracing metadata
+- 这项功能应作为 Graphon + Dify 的协同改造交付
+
 ## 使用方式
 
 这组决策文件应作为 implementation plan 的策略层输入。

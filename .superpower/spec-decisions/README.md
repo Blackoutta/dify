@@ -101,6 +101,16 @@ Defines the next upstream direction after debugging the workflow-as-tool gap:
 - Phase 2 separately designs how to expose `outer_node_execution_id`
 - avoid forcing session correctness and parent-span correctness into one patch
 
+### 0007. Cross-Repo Workflow-Tool Parent Context Propagation
+
+File: `0007-cross-repo-workflow-tool-parent-context.md`
+
+Defines the cross-repo ownership boundary:
+
+- Graphon owns the tool runtime contract and execution context exposure
+- Dify owns adapter translation into runtime parameters and tracing metadata
+- the feature should be delivered as coordinated Graphon + Dify changes
+
 ## How To Use These Files
 
 Use this decision set as the policy layer for the implementation plan.
