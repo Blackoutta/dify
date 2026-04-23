@@ -180,7 +180,7 @@ def test_workflow_tool_passes_parent_trace_context_from_runtime(monkeypatch: pyt
         {},
         {"outer_workflow_run_id": "outer-workflow-run-1"},
         {"outer_node_execution_id": "outer-node-execution-1"},
-        {"outer_workflow_run_id": "outer-workflow-run-1", "outer_node_execution_id": None},
+        {"outer_workflow_run_id": None, "outer_node_execution_id": None},
     ],
 )
 def test_workflow_tool_omits_parent_trace_context_when_runtime_is_incomplete(

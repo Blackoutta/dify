@@ -397,6 +397,13 @@ class DifyToolNodeRuntime(ToolNodeRuntimeProtocol):
         conversation_id = (
             None if variable_pool is None else get_system_text(variable_pool, SystemVariableKey.CONVERSATION_ID)
         )
+        outer_workflow_run_id = (
+            None
+            if variable_pool is None or node_data.provider_type != CoreToolProviderType.WORKFLOW
+            else get_system_text(variable_pool, SystemVariableKey.WORKFLOW_EXECUTION_ID)
+        )
+        if outer_workflow_run_id:
+            tool_runtime.runtime.runtime_parameters["outer_workflow_run_id"] = outer_workflow_run_id
         return ToolRuntimeHandle(raw=_WorkflowToolRuntimeBinding(tool=tool_runtime, conversation_id=conversation_id))
 
     def get_runtime_parameters(
