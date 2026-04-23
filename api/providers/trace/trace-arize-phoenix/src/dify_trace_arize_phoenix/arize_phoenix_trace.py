@@ -198,6 +198,12 @@ def _resolve_workflow_parent_context(trace_info: BaseTraceInfo) -> tuple[str | N
     return trace_info.resolved_parent_context
 
 
+def _resolve_workflow_root_trace_id(trace_info: WorkflowTraceInfo) -> str:
+    """Resolve the canonical root trace ID for Phoenix workflow spans."""
+    trace_correlation_override, _ = _resolve_workflow_parent_context(trace_info)
+    return trace_correlation_override or trace_info.resolved_trace_id or trace_info.workflow_run_id
+
+
 class ArizePhoenixDataTrace(BaseTraceInstance):
     def __init__(
         self,
@@ -210,6 +216,8 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         self.file_base_url = os.getenv("FILES_URL", "http://127.0.0.1:5001")
         self.propagator = TraceContextTextMapPropagator()
         self.dify_trace_ids: set[str] = set()
+        self.root_span_carriers: dict[str, dict[str, str]] = {}
+        self.carrier: dict[str, str] = {}
 
     def trace(self, trace_info: BaseTraceInfo):
         logger.info("[Arize/Phoenix] Trace Entity Info: %s", trace_info)
@@ -256,11 +264,15 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             file_list=safe_json_dumps(file_list),
             query=trace_info.query or "",
         )
-        workflow_session_id = trace_info.conversation_id or trace_info.workflow_run_id
+        workflow_session_id = _resolve_workflow_session_id(trace_info)
 
-        dify_trace_id = trace_info.trace_id or trace_info.message_id or trace_info.workflow_run_id
-        self.ensure_root_span(dify_trace_id)
-        root_span_context = self.propagator.extract(carrier=self.carrier)
+        root_trace_id = _resolve_workflow_root_trace_id(trace_info)
+        root_carrier = self.ensure_root_span(root_trace_id)
+
+        # Temporary Phoenix-local hierarchy handling: until upstream tracing
+        # exposes direct nested-workflow parent span wiring, reuse the resolved
+        # upstream workflow root so nested runs stay in the same trace tree.
+        workflow_span_context = self.propagator.extract(carrier=root_carrier)
 
         workflow_span = self.tracer.start_span(
             name=TraceTaskName.WORKFLOW_TRACE.value,
@@ -274,7 +286,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 SpanAttributes.SESSION_ID: workflow_session_id or "",
             },
             start_time=datetime_to_nanos(trace_info.start_time),
-            context=root_span_context,
+            context=workflow_span_context,
         )
 
         # Through workflow_run_id, get all_nodes_execution using repository
@@ -759,20 +771,25 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
 
     def ensure_root_span(self, dify_trace_id: str | None):
         """Ensure a unique root span exists for the given Dify trace ID."""
-        if str(dify_trace_id) not in self.dify_trace_ids:
-            self.carrier: dict[str, str] = {}
+        trace_key = str(dify_trace_id)
+        if trace_key not in self.dify_trace_ids:
+            carrier: dict[str, str] = {}
 
             root_span = self.tracer.start_span(name="Dify")
             root_span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.CHAIN.value)
             root_span.set_attribute("dify_project_name", str(self.project))
-            root_span.set_attribute("dify_trace_id", str(dify_trace_id))
+            root_span.set_attribute("dify_trace_id", trace_key)
 
             with use_span(root_span, end_on_exit=False):
-                self.propagator.inject(carrier=self.carrier)
+                self.propagator.inject(carrier=carrier)
 
             set_span_status(root_span)
             root_span.end()
-            self.dify_trace_ids.add(str(dify_trace_id))
+            self.dify_trace_ids.add(trace_key)
+            self.root_span_carriers[trace_key] = carrier
+
+        self.carrier = self.root_span_carriers[trace_key]
+        return self.carrier
 
     def api_check(self):
         try:
