@@ -117,7 +117,7 @@ def tool_node(monkeypatch) -> ToolNode:
 
     node = ToolNode(
         node_id="node-instance",
-        data=ToolNodeData.model_validate(config["data"]),
+        config=ToolNodeData.model_validate(config["data"]),
         graph_init_params=init_params,
         graph_runtime_state=graph_runtime_state,
         tool_file_manager_factory=tool_file_manager_factory,
