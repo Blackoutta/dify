@@ -507,9 +507,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             workflow_parent_carrier = _resolve_published_parent_span_context(parent_node_execution_id)
         else:
             root_trace_id = _resolve_workflow_root_trace_id(trace_info)
-            workflow_root_span_name = trace_info.metadata.get("app_name")
-            if not isinstance(workflow_root_span_name, str) or not workflow_root_span_name.strip():
-                workflow_root_span_name = trace_info.metadata.get("app_id")
+            workflow_root_span_name = trace_info.workflow_run_id
             if not isinstance(workflow_root_span_name, str) or not workflow_root_span_name.strip():
                 workflow_root_span_name = None
 
