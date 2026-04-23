@@ -111,6 +111,16 @@ Defines the cross-repo ownership boundary:
 - Dify owns adapter translation into runtime parameters and tracing metadata
 - the feature should be delivered as coordinated Graphon + Dify changes
 
+### 0008. Phoenix Parent Tool-Span Resolution For Nested Workflows
+
+File: `0008-phoenix-parent-tool-span-resolution.md`
+
+Defines the final Phoenix-local step after trace/session unification:
+
+- publish emitted tool-span context keyed by `node_execution_id`
+- resolve nested workflow parent context from `parent_node_execution_id`
+- use bounded retry when child trace tasks arrive before the parent tool span context exists
+
 ## How To Use These Files
 
 Use this decision set as the policy layer for the implementation plan.

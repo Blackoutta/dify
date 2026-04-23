@@ -111,6 +111,16 @@
 - Dify 负责把 runtime 上下文翻译成 runtime parameters 与 tracing metadata
 - 这项功能应作为 Graphon + Dify 的协同改造交付
 
+### 0008. Phoenix 中嵌套 Workflow 挂到父 Tool Span 的解析方案
+
+文件：`0008-phoenix-parent-tool-span-resolution.md`
+
+定义 trace/session 统一之后的最后一层 Phoenix-local 补丁：
+
+- 按 `node_execution_id` 发布已发出的 tool span context
+- 通过 `parent_node_execution_id` 解析 nested workflow 的父上下文
+- 当 child trace task 先到、父上下文尚未生成时，使用有限次重试而不是第一次就直接退回 root
+
 ## 使用方式
 
 这组决策文件应作为 implementation plan 的策略层输入。
