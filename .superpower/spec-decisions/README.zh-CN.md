@@ -81,6 +81,16 @@
 - workflow / chatflow 的 session 语义
 - Phoenix 侧优先复用上游 session 语义，必要时再本地补位
 
+### 0005. Phoenix 中 Nested Workflow 的 Session 继承规则
+
+文件：`0005-nested-workflow-session-inheritance.md`
+
+定义 Phoenix-local 的 nested workflow session 合并规则：
+
+- chatflow 仍然优先使用 `conversation_id`
+- nested workflow 通过 `parent_workflow_run_id` 继承外层 workflow session
+- session 合并与 session 页面 input/output 缺失属于两个独立问题
+
 ## 使用方式
 
 这组决策文件应作为 implementation plan 的策略层输入。

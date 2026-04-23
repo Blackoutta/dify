@@ -81,6 +81,16 @@ Defines:
 - session semantics for workflow and chatflow
 - the rule that Phoenix should reuse upstream session semantics before applying local fallback logic
 
+### 0005. Nested Workflow Session Inheritance In Phoenix
+
+File: `0005-nested-workflow-session-inheritance.md`
+
+Defines the Phoenix-local session unification rule for nested workflows:
+
+- keep `conversation_id` first for chatflow
+- let nested workflow inherit the outer workflow session through `parent_workflow_run_id`
+- treat session unification and session-summary input/output issues as separate concerns
+
 ## How To Use These Files
 
 Use this decision set as the policy layer for the implementation plan.
