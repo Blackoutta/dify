@@ -277,7 +277,18 @@ def _resolve_structured_parent_execution_id(
     child span under the enclosing loop/iteration span without relying on
     execution-order heuristics.
     """
-    for enclosing_node_id in (node_execution.iteration_id, node_execution.loop_id):
+    execution_metadata = getattr(node_execution, "execution_metadata_dict", None)
+    if not isinstance(execution_metadata, Mapping):
+        execution_metadata = getattr(node_execution, "metadata", None)
+    if not isinstance(execution_metadata, Mapping):
+        execution_metadata = {}
+
+    for enclosing_node_id in (
+        getattr(node_execution, "iteration_id", None),
+        getattr(node_execution, "loop_id", None),
+        execution_metadata.get("iteration_id"),
+        execution_metadata.get("loop_id"),
+    ):
         if not isinstance(enclosing_node_id, str):
             continue
 

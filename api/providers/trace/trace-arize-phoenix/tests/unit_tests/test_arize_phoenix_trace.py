@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from dify_trace_arize_phoenix.arize_phoenix_trace import (
@@ -263,3 +264,23 @@ class TestWorkflowHierarchyHelpers:
         )
 
         assert structured_parent_execution_id == "loop-execution-1"
+
+    def test_resolve_structured_parent_execution_id_reads_execution_metadata_dict_for_models(self):
+        body_node = SimpleNamespace(
+            node_execution_id="body-execution-1",
+            node_id="body-node-1",
+            execution_metadata_dict={
+                "iteration_id": "iteration-node-1",
+                "loop_id": "loop-node-1",
+            },
+        )
+
+        structured_parent_execution_id = _resolve_structured_parent_execution_id(
+            body_node,
+            execution_id_by_node_id={
+                "iteration-node-1": "iteration-execution-1",
+                "loop-node-1": "loop-execution-1",
+            },
+        )
+
+        assert structured_parent_execution_id == "iteration-execution-1"
