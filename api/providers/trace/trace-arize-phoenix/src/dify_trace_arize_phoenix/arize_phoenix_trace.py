@@ -256,6 +256,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             file_list=safe_json_dumps(file_list),
             query=trace_info.query or "",
         )
+        workflow_session_id = trace_info.conversation_id or trace_info.workflow_run_id
 
         dify_trace_id = trace_info.trace_id or trace_info.message_id or trace_info.workflow_run_id
         self.ensure_root_span(dify_trace_id)
@@ -270,6 +271,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 SpanAttributes.OUTPUT_VALUE: safe_json_dumps(trace_info.workflow_run_outputs),
                 SpanAttributes.OUTPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
                 SpanAttributes.METADATA: safe_json_dumps(metadata),
+                SpanAttributes.SESSION_ID: workflow_session_id or "",
             },
             start_time=datetime_to_nanos(trace_info.start_time),
             context=root_span_context,
@@ -354,6 +356,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                         SpanAttributes.OUTPUT_VALUE: safe_json_dumps(outputs_value),
                         SpanAttributes.OUTPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
                         SpanAttributes.METADATA: safe_json_dumps(node_metadata),
+                        SpanAttributes.SESSION_ID: workflow_session_id or "",
                     },
                     start_time=datetime_to_nanos(created_at),
                     context=workflow_span_context,
