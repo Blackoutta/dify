@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from core.app.file_access import DatabaseFileAccessController
 from core.db.session_factory import session_factory
+from core.helper.trace_id_helper import extract_parent_trace_context_from_args
 from core.tools.__base.tool import Tool
 from core.tools.__base.tool_runtime import ToolRuntime
 from core.tools.entities.tool_entities import (
@@ -94,11 +95,21 @@ class WorkflowTool(Tool):
 
         self._latest_usage = LLMUsage.empty_usage()
 
+        runtime_parameters: Mapping[str, Any] = self.runtime.runtime_parameters if self.runtime else {}
+        parent_trace_context = extract_parent_trace_context_from_args(
+            {
+                "parent_trace_context": {
+                    "parent_workflow_run_id": runtime_parameters.get("outer_workflow_run_id"),
+                    "parent_node_execution_id": runtime_parameters.get("outer_node_execution_id"),
+                }
+            }
+        )
+
         result = generator.generate(
             app_model=app,
             workflow=workflow,
             user=user,
-            args={"inputs": tool_parameters, "files": files},
+            args={"inputs": tool_parameters, "files": files, **parent_trace_context},
             invoke_from=self.runtime.invoke_from,
             streaming=False,
             call_depth=self.workflow_call_depth + 1,
