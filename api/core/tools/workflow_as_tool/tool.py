@@ -96,20 +96,26 @@ class WorkflowTool(Tool):
         self._latest_usage = LLMUsage.empty_usage()
 
         runtime_parameters: Mapping[str, Any] = self.runtime.runtime_parameters if self.runtime else {}
-        parent_trace_context = extract_parent_trace_context_from_args(
-            {
-                "parent_trace_context": {
-                    "parent_workflow_run_id": runtime_parameters.get("outer_workflow_run_id"),
-                    "parent_node_execution_id": runtime_parameters.get("outer_node_execution_id"),
-                }
-            }
-        )
+        generator_args: dict[str, Any] = {"inputs": tool_parameters, "files": files}
+        outer_workflow_run_id = runtime_parameters.get("outer_workflow_run_id")
+        outer_node_execution_id = runtime_parameters.get("outer_node_execution_id")
+        if isinstance(outer_workflow_run_id, str) and isinstance(outer_node_execution_id, str):
+            generator_args.update(
+                extract_parent_trace_context_from_args(
+                    {
+                        "parent_trace_context": {
+                            "parent_workflow_run_id": outer_workflow_run_id,
+                            "parent_node_execution_id": outer_node_execution_id,
+                        }
+                    }
+                )
+            )
 
         result = generator.generate(
             app_model=app,
             workflow=workflow,
             user=user,
-            args={"inputs": tool_parameters, "files": files, **parent_trace_context},
+            args=generator_args,
             invoke_from=self.runtime.invoke_from,
             streaming=False,
             call_depth=self.workflow_call_depth + 1,
