@@ -56,7 +56,7 @@ from models.provider_ids import ModelProviderID
 from services.feature_service import FeatureService
 
 if TYPE_CHECKING:
-    from graphon.model_runtime.runtime import ModelRuntime
+    from graphon.model_runtime import ModelRuntime
 
 _credentials_adapter: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 
