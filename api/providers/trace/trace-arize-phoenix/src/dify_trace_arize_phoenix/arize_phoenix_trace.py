@@ -269,10 +269,14 @@ def _resolve_structured_parent_execution_id(
     node_execution: _NodeExecutionLike,
     execution_id_by_node_id: Mapping[str, str],
 ) -> str | None:
-    """Resolve Phoenix-local structured parents from loop/iteration node ids."""
-    if node_execution.node_type not in _PHOENIX_STRUCTURED_NODE_TYPES:
-        return None
+    """Resolve Phoenix-local structured parents from loop/iteration node ids.
 
+    Any execution carrying ``iteration_id`` or ``loop_id`` belongs to an
+    enclosing structured node. When predecessor node ids are ambiguous because
+    the graph node repeats inside that structure, Phoenix can still keep the
+    child span under the enclosing loop/iteration span without relying on
+    execution-order heuristics.
+    """
     for enclosing_node_id in (node_execution.iteration_id, node_execution.loop_id):
         if not isinstance(enclosing_node_id, str):
             continue

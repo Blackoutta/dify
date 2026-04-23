@@ -6,6 +6,7 @@ from dify_trace_arize_phoenix.arize_phoenix_trace import (
     _build_graph_parent_index,
     _get_node_span_kind,
     _resolve_node_parent,
+    _resolve_structured_parent_execution_id,
     _resolve_workflow_parent_context,
     _resolve_workflow_session_id,
 )
@@ -218,3 +219,20 @@ class TestWorkflowHierarchyHelpers:
         )
 
         assert parent is workflow_span
+
+    def test_resolve_structured_parent_execution_id_allows_body_nodes_to_use_enclosing_structure(self):
+        body_node = _make_node_info(
+            node_execution_id="body-execution-1",
+            node_id="body-node-1",
+            node_type="tool",
+            loop_id="loop-node-1",
+        )
+
+        structured_parent_execution_id = _resolve_structured_parent_execution_id(
+            body_node,
+            execution_id_by_node_id={
+                "loop-node-1": "loop-execution-1",
+            },
+        )
+
+        assert structured_parent_execution_id == "loop-execution-1"

@@ -538,6 +538,97 @@ def test_workflow_trace_parents_structured_start_nodes_to_enclosing_structure_sp
     assert start_node_call.kwargs["context"] == f"context:{enclosing_node_type}"
 
 
+@pytest.mark.parametrize(
+    ("enclosing_node_type", "structured_field"),
+    [
+        ("loop", "loop_id"),
+        ("iteration", "iteration_id"),
+    ],
+)
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_keeps_duplicate_body_node_children_under_enclosing_structure(
+    mock_sessionmaker,
+    mock_repo_factory,
+    mock_db,
+    trace_instance,
+    enclosing_node_type,
+    structured_field,
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info()
+    repo = MagicMock()
+    enclosing_node = _make_node_execution(
+        id=f"{enclosing_node_type}-execution-1",
+        node_execution_id=f"{enclosing_node_type}-execution-1",
+        node_id=f"{enclosing_node_type}-node-1",
+        node_type=enclosing_node_type,
+    )
+    structured_kwargs = {structured_field: f"{enclosing_node_type}-node-1"}
+    repeated_body_node_1 = _make_node_execution(
+        id="body-execution-1",
+        node_execution_id="body-execution-1",
+        node_id="body-node-1",
+        node_type="tool",
+        **structured_kwargs,
+    )
+    repeated_body_node_2 = _make_node_execution(
+        id="body-execution-2",
+        node_execution_id="body-execution-2",
+        node_id="body-node-1",
+        node_type="tool",
+        **structured_kwargs,
+    )
+    child_node = _make_node_execution(
+        id="child-execution-1",
+        node_execution_id="child-execution-1",
+        node_id="child-node-1",
+        node_type="llm",
+        predecessor_node_id="body-node-1",
+        process_data={
+            "prompts": [{"role": "user", "content": "hi"}],
+            "model_provider": "openai",
+            "model_name": "gpt-4",
+        },
+        **structured_kwargs,
+    )
+    repo.get_by_workflow_execution.return_value = [child_node, repeated_body_node_1, repeated_body_node_2, enclosing_node]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    workflow_span = MagicMock(name="workflow-span")
+    workflow_span._context_label = "workflow"
+    enclosing_node_span = MagicMock(name="enclosing-node-span")
+    enclosing_node_span._context_label = enclosing_node_type
+    child_node_span = MagicMock(name="child-node-span")
+    child_node_span._context_label = "child"
+    repeated_body_node_1_span = MagicMock(name="repeated-body-node-1-span")
+    repeated_body_node_1_span._context_label = "body-1"
+    repeated_body_node_2_span = MagicMock(name="repeated-body-node-2-span")
+    repeated_body_node_2_span._context_label = "body-2"
+    trace_instance.tracer.start_span.side_effect = [
+        workflow_span,
+        enclosing_node_span,
+        child_node_span,
+        repeated_body_node_1_span,
+        repeated_body_node_2_span,
+    ]
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance, "ensure_root_span", return_value={}),
+        patch.object(trace_instance.propagator, "extract", return_value="root-context"),
+        patch(
+            "dify_trace_arize_phoenix.arize_phoenix_trace.set_span_in_context",
+            side_effect=lambda span: f"context:{span._context_label}",
+        ),
+    ):
+        trace_instance.workflow_trace(info)
+
+    child_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm")
+    assert child_node_call.kwargs["context"] == f"context:{enclosing_node_type}"
+
+
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 def test_message_trace_keeps_conversation_id_as_session(mock_db, trace_instance):
     mock_db.engine = MagicMock()
