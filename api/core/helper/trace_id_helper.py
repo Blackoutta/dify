@@ -61,6 +61,31 @@ def extract_external_trace_id_from_args(args: Mapping[str, Any]):
     return {}
 
 
+def extract_parent_trace_context_from_args(args: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """
+    Extract 'parent_trace_context' from args.
+
+    Returns a dict suitable for use in extras when both parent identifiers exist.
+    Returns an empty dict if the context is missing or incomplete.
+    """
+    parent_trace_context = args.get("parent_trace_context")
+    if not isinstance(parent_trace_context, Mapping):
+        return {}
+
+    if "parent_workflow_run_id" not in parent_trace_context:
+        return {}
+
+    if "parent_node_execution_id" not in parent_trace_context:
+        return {}
+
+    return {
+        "parent_trace_context": {
+            "parent_workflow_run_id": parent_trace_context["parent_workflow_run_id"],
+            "parent_node_execution_id": parent_trace_context["parent_node_execution_id"],
+        }
+    }
+
+
 def get_trace_id_from_otel_context() -> str | None:
     """
     Retrieve the current trace ID from the active OpenTelemetry trace context.
