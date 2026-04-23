@@ -11,6 +11,7 @@ import json
 import logging
 
 from celery import shared_task
+from celery.exceptions import Retry
 from flask import current_app
 
 from core.ops.entities.config_entity import OPS_FILE_PATH, OPS_TRACE_FAILED_KEY
@@ -84,14 +85,21 @@ def process_trace_tasks(self, file_info):
             failed_key = f"{OPS_TRACE_FAILED_KEY}_{app_id}"
             redis_client.incr(failed_key)
         else:
-            should_delete_file = False
             logger.warning(
                 "Phoenix parent span context pending, scheduling retry %s/%s for app_id %s",
                 self.request.retries + 1,
                 _PENDING_PHOENIX_PARENT_RETRY_LIMIT,
                 app_id,
             )
-            raise self.retry(exc=e, countdown=_PENDING_PHOENIX_PARENT_RETRY_DELAY_SECONDS)
+            try:
+                raise self.retry(exc=e, countdown=_PENDING_PHOENIX_PARENT_RETRY_DELAY_SECONDS)
+            except Retry:
+                should_delete_file = False
+                raise
+            except Exception:
+                logger.exception("Failed to schedule Phoenix parent span context retry, app_id: %s", app_id)
+                failed_key = f"{OPS_TRACE_FAILED_KEY}_{app_id}"
+                redis_client.incr(failed_key)
     except Exception as e:
         logger.exception("Processing trace tasks failed, app_id: %s", app_id)
         failed_key = f"{OPS_TRACE_FAILED_KEY}_{app_id}"

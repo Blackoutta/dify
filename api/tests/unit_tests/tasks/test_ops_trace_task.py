@@ -114,6 +114,31 @@ def test_process_trace_tasks_deletes_payload_and_counts_terminal_failure():
     mock_incr.assert_called_once_with(f"{OPS_TRACE_FAILED_KEY}_app-id")
 
 
+def test_process_trace_tasks_treats_retry_enqueue_failure_as_terminal_failure():
+    file_info = {"app_id": "app-id", "file_id": "file-id"}
+    trace_instance = MagicMock()
+    pending_error = PendingPhoenixParentSpanContextError("parent-node-execution-id")
+    retry_enqueue_error = RuntimeError("retry enqueue failed")
+    trace_instance.trace.side_effect = pending_error
+
+    with (
+        patch.dict(sys.modules, _install_trace_manager(trace_instance)),
+        patch("tasks.ops_trace_task.current_app", FakeCurrentApp()),
+        patch("tasks.ops_trace_task.storage.load", return_value=_make_payload()),
+        patch("tasks.ops_trace_task.storage.delete") as mock_delete,
+        patch("tasks.ops_trace_task.redis_client.incr") as mock_incr,
+        patch.object(process_trace_tasks, "retry", side_effect=retry_enqueue_error) as mock_retry,
+    ):
+        _run_task(file_info)
+
+    mock_retry.assert_called_once_with(
+        exc=pending_error,
+        countdown=process_trace_tasks.default_retry_delay,
+    )
+    mock_delete.assert_called_once_with("ops_trace/app-id/file-id.json")
+    mock_incr.assert_called_once_with(f"{OPS_TRACE_FAILED_KEY}_app-id")
+
+
 def test_process_trace_tasks_deletes_payload_and_counts_exhausted_pending_parent_retry():
     file_info = {"app_id": "app-id", "file_id": "file-id"}
     trace_instance = MagicMock()
