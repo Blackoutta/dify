@@ -3,6 +3,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from openinference.semconv.trace import SpanAttributes
 from dify_trace_arize_phoenix.arize_phoenix_trace import (
     ArizePhoenixDataTrace,
     datetime_to_nanos,
@@ -273,10 +274,63 @@ def test_workflow_trace_no_app_id(mock_db, trace_instance):
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_uses_extracted_root_context(mock_sessionmaker, mock_repo_factory, mock_db, trace_instance):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info()
+    repo = MagicMock()
+    repo.get_by_workflow_execution.return_value = []
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    root_context = object()
+    root_span = MagicMock()
+    workflow_span = MagicMock()
+    trace_instance.tracer.start_span.side_effect = [root_span, workflow_span]
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance.propagator, "extract", return_value=root_context) as mock_extract,
+    ):
+        trace_instance.workflow_trace(info)
+
+    mock_extract.assert_called_once_with(carrier=trace_instance.carrier)
+    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["context"] is root_context
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_falls_back_to_workflow_run_id_for_session(
+    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info(conversation_id=None)
+    repo = MagicMock()
+    repo.get_by_workflow_execution.return_value = []
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    root_span = MagicMock()
+    workflow_span = MagicMock()
+    trace_instance.tracer.start_span.side_effect = [root_span, workflow_span]
+
+    with (
+        patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()),
+        patch.object(trace_instance.propagator, "extract", return_value=object()),
+    ):
+        trace_instance.workflow_trace(info)
+
+    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["attributes"][SpanAttributes.SESSION_ID] == (
+        info.workflow_run_id
+    )
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 def test_message_trace_success(mock_db, trace_instance):
     mock_db.engine = MagicMock()
     info = _make_message_info()
     info.message_data = MagicMock()
+    info.message_data.conversation_id = "conversation-1"
     info.message_data.from_account_id = "acc1"
     info.message_data.from_end_user_id = None
     info.message_data.query = "q"
@@ -288,8 +342,16 @@ def test_message_trace_success(mock_db, trace_instance):
     info.message_data.error = None
     info.error = None
 
+    root_span = MagicMock()
+    message_span = MagicMock()
+    llm_span = MagicMock()
+    trace_instance.tracer.start_span.side_effect = [root_span, message_span, llm_span]
+
     trace_instance.message_trace(info)
-    assert trace_instance.tracer.start_span.call_count >= 1
+
+    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["attributes"][SpanAttributes.SESSION_ID] == (
+        "conversation-1"
+    )
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
