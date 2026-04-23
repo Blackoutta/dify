@@ -24,6 +24,7 @@ from core.ops.entities.trace_entity import (
     MessageTraceInfo,
     ModerationTraceInfo,
     SuggestedQuestionTraceInfo,
+    TraceTaskName,
     ToolTraceInfo,
     WorkflowTraceInfo,
 )
@@ -72,6 +73,13 @@ def _make_message_info(**kwargs):
     }
     defaults.update(kwargs)
     return MessageTraceInfo(**defaults)
+
+
+def _get_start_span_call(start_span_mock, *, span_name: str):
+    for call in start_span_mock.call_args_list:
+        if call.kwargs.get("name") == span_name:
+            return call
+    raise AssertionError(f"Could not find start_span call with name={span_name!r}")
 
 
 # --- Utility Function Tests ---
@@ -295,7 +303,10 @@ def test_workflow_trace_uses_extracted_root_context(mock_sessionmaker, mock_repo
         trace_instance.workflow_trace(info)
 
     mock_extract.assert_called_once_with(carrier=trace_instance.carrier)
-    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["context"] is root_context
+    workflow_span_call = _get_start_span_call(
+        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
+    )
+    assert workflow_span_call.kwargs["context"] is root_context
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
@@ -320,9 +331,10 @@ def test_workflow_trace_falls_back_to_workflow_run_id_for_session(
     ):
         trace_instance.workflow_trace(info)
 
-    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["attributes"][SpanAttributes.SESSION_ID] == (
-        info.workflow_run_id
+    workflow_span_call = _get_start_span_call(
+        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
     )
+    assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == info.workflow_run_id
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
@@ -349,9 +361,10 @@ def test_message_trace_keeps_conversation_id_as_session(mock_db, trace_instance)
 
     trace_instance.message_trace(info)
 
-    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["attributes"][SpanAttributes.SESSION_ID] == (
-        "conversation-2"
+    message_span_call = _get_start_span_call(
+        trace_instance.tracer.start_span, span_name=TraceTaskName.MESSAGE_TRACE.value
     )
+    assert message_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-2"
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
