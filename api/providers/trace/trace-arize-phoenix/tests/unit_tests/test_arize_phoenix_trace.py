@@ -1,13 +1,12 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 from dify_trace_arize_phoenix.arize_phoenix_trace import (
-    ArizePhoenixDataTrace,
     _NODE_TYPE_TO_SPAN_KIND,
     _get_node_span_kind,
+    _resolve_workflow_parent_context,
+    _resolve_workflow_session_id,
 )
-from dify_trace_arize_phoenix.config import ArizeConfig
 from openinference.semconv.trace import OpenInferenceSpanKindValues
 
 from core.ops.entities.trace_entity import WorkflowTraceInfo
@@ -37,13 +36,6 @@ def _make_workflow_info(**kwargs) -> WorkflowTraceInfo:
     }
     defaults.update(kwargs)
     return WorkflowTraceInfo(**defaults)
-
-
-@pytest.fixture
-def trace_instance() -> ArizePhoenixDataTrace:
-    with patch("dify_trace_arize_phoenix.arize_phoenix_trace.setup_tracer") as mock_setup:
-        mock_setup.return_value = (MagicMock(), MagicMock())
-        return ArizePhoenixDataTrace(ArizeConfig(endpoint="http://example.com", project="project-1"))
 
 
 class TestGetNodeSpanKind:
@@ -79,17 +71,12 @@ class TestGetNodeSpanKind:
 
 
 class TestWorkflowSessionResolution:
-    def test_prefers_conversation_id(self, trace_instance: ArizePhoenixDataTrace):
+    def test_prefers_conversation_id(self):
         info = _make_workflow_info(conversation_id="conversation-1")
 
-        assert trace_instance._resolve_workflow_session_id(info) == "conversation-1"
+        assert _resolve_workflow_session_id(info) == "conversation-1"
 
-    def test_falls_back_to_workflow_run_id(self, trace_instance: ArizePhoenixDataTrace):
-        info = _make_workflow_info(conversation_id=None)
-
-        assert trace_instance._resolve_workflow_session_id(info) == "workflow-run-1"
-
-    def test_prefers_nested_parent_session(self, trace_instance: ArizePhoenixDataTrace):
+    def test_prefers_nested_parent_session_id(self):
         info = _make_workflow_info(
             conversation_id=None,
             metadata={
@@ -100,12 +87,28 @@ class TestWorkflowSessionResolution:
             },
         )
 
-        assert trace_instance._resolve_workflow_session_id(info) == "parent-session-1"
+        assert _resolve_workflow_session_id(info) == "parent-session-1"
 
-    def test_parent_context_helper_delegates_to_resolved_parent_context(
-        self, trace_instance: ArizePhoenixDataTrace
-    ):
+    def test_ignores_nested_parent_conversation_id(self):
+        info = _make_workflow_info(
+            conversation_id=None,
+            metadata={
+                "app_id": "app-1",
+                "parent_trace_context": {
+                    "conversation_id": "parent-conversation-1",
+                },
+            },
+        )
+
+        assert _resolve_workflow_session_id(info) == "workflow-run-1"
+
+    def test_falls_back_to_workflow_run_id(self):
+        info = _make_workflow_info(conversation_id=None)
+
+        assert _resolve_workflow_session_id(info) == "workflow-run-1"
+
+    def test_parent_context_helper_delegates_to_resolved_parent_context(self):
         info = MagicMock()
         info.resolved_parent_context = ("outer-workflow-run-1", "outer-node-execution-1")
 
-        assert trace_instance._resolve_workflow_parent_context(info) == info.resolved_parent_context
+        assert _resolve_workflow_parent_context(info) == info.resolved_parent_context

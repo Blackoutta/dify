@@ -177,6 +177,27 @@ def _get_node_span_kind(node_type: str) -> OpenInferenceSpanKindValues:
     return _NODE_TYPE_TO_SPAN_KIND.get(node_type, OpenInferenceSpanKindValues.CHAIN)
 
 
+def _resolve_workflow_session_id(trace_info: WorkflowTraceInfo) -> str:
+    """Resolve the workflow session ID for Phoenix workflow spans."""
+    if trace_info.conversation_id:
+        return trace_info.conversation_id
+
+    parent_trace_context = trace_info.metadata.get("parent_trace_context")
+    if isinstance(parent_trace_context, dict):
+        parent_session_id = parent_trace_context.get("session_id")
+        if isinstance(parent_session_id, str) and parent_session_id:
+            return parent_session_id
+
+    # Future migration: once nested workflow callers consistently pass a
+    # durable session identifier, the workflow_run_id fallback can be removed.
+    return trace_info.workflow_run_id
+
+
+def _resolve_workflow_parent_context(trace_info: BaseTraceInfo) -> tuple[str | None, str | None]:
+    """Expose the typed parent context already resolved on the trace info."""
+    return trace_info.resolved_parent_context
+
+
 class ArizePhoenixDataTrace(BaseTraceInstance):
     def __init__(
         self,
@@ -249,7 +270,6 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 SpanAttributes.OUTPUT_VALUE: safe_json_dumps(trace_info.workflow_run_outputs),
                 SpanAttributes.OUTPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
                 SpanAttributes.METADATA: safe_json_dumps(metadata),
-                SpanAttributes.SESSION_ID: self._resolve_workflow_session_id(trace_info),
             },
             start_time=datetime_to_nanos(trace_info.start_time),
             context=root_span_context,
@@ -334,7 +354,6 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                         SpanAttributes.OUTPUT_VALUE: safe_json_dumps(outputs_value),
                         SpanAttributes.OUTPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
                         SpanAttributes.METADATA: safe_json_dumps(node_metadata),
-                        SpanAttributes.SESSION_ID: self._resolve_workflow_session_id(trace_info),
                     },
                     start_time=datetime_to_nanos(created_at),
                     context=workflow_span_context,
@@ -751,30 +770,6 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             set_span_status(root_span)
             root_span.end()
             self.dify_trace_ids.add(str(dify_trace_id))
-
-    def _resolve_workflow_session_id(self, trace_info: WorkflowTraceInfo) -> str:
-        """Resolve the workflow session ID for Phoenix workflow spans."""
-        if trace_info.conversation_id:
-            return trace_info.conversation_id
-
-        parent_trace_context = trace_info.metadata.get("parent_trace_context")
-        if isinstance(parent_trace_context, dict):
-            parent_session_id = parent_trace_context.get("session_id")
-            if isinstance(parent_session_id, str) and parent_session_id:
-                return parent_session_id
-            nested_conversation_id = parent_trace_context.get("conversation_id")
-            if isinstance(nested_conversation_id, str) and nested_conversation_id:
-                return nested_conversation_id
-
-        # Future migration: once nested workflow callers consistently pass a
-        # durable session identifier, the workflow_run_id fallback can be removed.
-        return trace_info.workflow_run_id
-
-    def _resolve_workflow_parent_context(
-        self, trace_info: BaseTraceInfo
-    ) -> tuple[str | None, str | None]:
-        """Expose the typed parent context already resolved on the trace info."""
-        return trace_info.resolved_parent_context
 
     def api_check(self):
         try:
