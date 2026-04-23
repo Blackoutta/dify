@@ -378,6 +378,7 @@ class DifyToolNodeRuntime(ToolNodeRuntimeProtocol):
         node_id: str,
         node_data: ToolNodeData,
         variable_pool,
+        node_execution_id: str | None = None,
     ) -> ToolRuntimeHandle:
         try:
             tool_runtime = ToolManager.get_workflow_tool_runtime(
@@ -397,13 +398,16 @@ class DifyToolNodeRuntime(ToolNodeRuntimeProtocol):
         conversation_id = (
             None if variable_pool is None else get_system_text(variable_pool, SystemVariableKey.CONVERSATION_ID)
         )
-        outer_workflow_run_id = (
-            None
-            if variable_pool is None or node_data.provider_type != CoreToolProviderType.WORKFLOW
-            else get_system_text(variable_pool, SystemVariableKey.WORKFLOW_EXECUTION_ID)
-        )
-        if outer_workflow_run_id:
-            tool_runtime.runtime.runtime_parameters["outer_workflow_run_id"] = outer_workflow_run_id
+        if self._is_workflow_tool_provider(node_data):
+            outer_workflow_run_id = (
+                None
+                if variable_pool is None
+                else get_system_text(variable_pool, SystemVariableKey.WORKFLOW_EXECUTION_ID)
+            )
+            if isinstance(outer_workflow_run_id, str):
+                tool_runtime.runtime.runtime_parameters["outer_workflow_run_id"] = outer_workflow_run_id
+            if isinstance(node_execution_id, str):
+                tool_runtime.runtime.runtime_parameters["outer_node_execution_id"] = node_execution_id
         return ToolRuntimeHandle(raw=_WorkflowToolRuntimeBinding(tool=tool_runtime, conversation_id=conversation_id))
 
     def get_runtime_parameters(
@@ -515,6 +519,10 @@ class DifyToolNodeRuntime(ToolNodeRuntimeProtocol):
             tool_configurations=dict(node_data.tool_configurations),
             credential_id=node_data.credential_id,
         )
+
+    @staticmethod
+    def _is_workflow_tool_provider(node_data: ToolNodeData) -> bool:
+        return node_data.provider_type.value == CoreToolProviderType.WORKFLOW.value
 
     def _adapt_messages(
         self,
