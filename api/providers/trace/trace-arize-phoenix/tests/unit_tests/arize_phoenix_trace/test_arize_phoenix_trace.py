@@ -357,6 +357,35 @@ def test_message_trace_success(mock_db, trace_instance):
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+def test_message_trace_keeps_conversation_id_as_session(mock_db, trace_instance):
+    mock_db.engine = MagicMock()
+    info = _make_message_info()
+    info.message_data = MagicMock()
+    info.message_data.conversation_id = "conversation-2"
+    info.message_data.from_account_id = "acc2"
+    info.message_data.from_end_user_id = None
+    info.message_data.query = "q2"
+    info.message_data.answer = "a2"
+    info.message_data.status = "s2"
+    info.message_data.model_id = "m2"
+    info.message_data.model_provider = "p2"
+    info.message_data.message_metadata = "{}"
+    info.message_data.error = None
+    info.error = None
+
+    root_span = MagicMock()
+    message_span = MagicMock()
+    llm_span = MagicMock()
+    trace_instance.tracer.start_span.side_effect = [root_span, message_span, llm_span]
+
+    trace_instance.message_trace(info)
+
+    assert trace_instance.tracer.start_span.call_args_list[1].kwargs["attributes"][SpanAttributes.SESSION_ID] == (
+        "conversation-2"
+    )
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 def test_message_trace_with_error(mock_db, trace_instance):
     mock_db.engine = MagicMock()
     info = _make_message_info()
