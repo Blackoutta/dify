@@ -91,6 +91,16 @@
 - nested workflow 通过 `parent_workflow_run_id` 继承外层 workflow session
 - session 合并与 session 页面 input/output 缺失属于两个独立问题
 
+### 0006. 上游 Parent Context 的两阶段补丁策略
+
+文件：`0006-two-phase-upstream-parent-context-strategy.md`
+
+定义 workflow-as-tool 缺口排查之后的下一步上游方向：
+
+- 阶段一先补 `outer_workflow_run_id`，优先解开 session 合并
+- 阶段二再单独设计 `outer_node_execution_id` 的暴露方式
+- 不把 session 正确性和 parent span 正确性强行塞进同一个补丁
+
 ## 使用方式
 
 这组决策文件应作为 implementation plan 的策略层输入。

@@ -91,6 +91,16 @@ Defines the Phoenix-local session unification rule for nested workflows:
 - let nested workflow inherit the outer workflow session through `parent_workflow_run_id`
 - treat session unification and session-summary input/output issues as separate concerns
 
+### 0006. Two-Phase Upstream Parent Context Strategy
+
+File: `0006-two-phase-upstream-parent-context-strategy.md`
+
+Defines the next upstream direction after debugging the workflow-as-tool gap:
+
+- Phase 1 injects `outer_workflow_run_id` to unblock session unification
+- Phase 2 separately designs how to expose `outer_node_execution_id`
+- avoid forcing session correctness and parent-span correctness into one patch
+
 ## How To Use These Files
 
 Use this decision set as the policy layer for the implementation plan.
