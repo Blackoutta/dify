@@ -4,8 +4,10 @@ from unittest.mock import MagicMock
 
 from dify_trace_arize_phoenix.arize_phoenix_trace import (
     _NODE_TYPE_TO_SPAN_KIND,
+    PendingPhoenixParentSpanContextError,
     _build_graph_parent_index,
     _get_node_span_kind,
+    _phoenix_parent_span_redis_key,
     _resolve_node_parent,
     _resolve_structured_parent_execution_id,
     _resolve_workflow_parent_context,
@@ -138,6 +140,19 @@ class TestWorkflowSessionResolution:
         info.resolved_parent_context = ("outer-workflow-run-1", "outer-node-execution-1")
 
         assert _resolve_workflow_parent_context(info) == info.resolved_parent_context
+
+
+class TestPhoenixParentSpanBridgeHelpers:
+    def test_parent_span_redis_key_is_stable(self):
+        assert _phoenix_parent_span_redis_key("outer-node-execution-1") == (
+            "trace:phoenix:parent_span:outer-node-execution-1"
+        )
+
+    def test_pending_parent_exception_exposes_execution_id(self):
+        error = PendingPhoenixParentSpanContextError("outer-node-execution-1")
+
+        assert error.parent_node_execution_id == "outer-node-execution-1"
+        assert "outer-node-execution-1" in str(error)
 
 
 class TestWorkflowHierarchyHelpers:

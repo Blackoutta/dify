@@ -41,11 +41,67 @@ from core.ops.utils import JSON_DICT_ADAPTER
 from core.repositories import DifyCoreRepositoryFactory
 from dify_trace_arize_phoenix.config import ArizeConfig, PhoenixConfig
 from extensions.ext_database import db
+from extensions.ext_redis import redis_client
 from graphon.enums import WorkflowNodeExecutionStatus
 from models.model import EndUser, MessageFile
 from models.workflow import WorkflowNodeExecutionTriggeredFrom
 
 logger = logging.getLogger(__name__)
+
+_PHOENIX_PARENT_SPAN_CONTEXT_TTL_SECONDS = 300
+
+
+class PendingPhoenixParentSpanContextError(RuntimeError):
+    """Raised when a nested workflow arrives before Phoenix stores its parent tool span context."""
+
+    parent_node_execution_id: str
+
+    def __init__(self, parent_node_execution_id: str):
+        self.parent_node_execution_id = parent_node_execution_id
+        super().__init__(
+            "Pending Phoenix parent span context for parent_node_execution_id="
+            f"{parent_node_execution_id}. Retry after the parent tool span is published."
+        )
+
+
+def _phoenix_parent_span_redis_key(parent_node_execution_id: str) -> str:
+    """Build the Redis key that stores a restorable Phoenix parent span carrier."""
+    return f"trace:phoenix:parent_span:{parent_node_execution_id}"
+
+
+def _publish_parent_span_context(parent_node_execution_id: str, carrier: Mapping[str, str]) -> None:
+    """Persist a tracecontext carrier so nested workflow spans can restore the tool span parent."""
+    redis_client.setex(
+        _phoenix_parent_span_redis_key(parent_node_execution_id),
+        _PHOENIX_PARENT_SPAN_CONTEXT_TTL_SECONDS,
+        safe_json_dumps(dict(carrier)),
+    )
+
+
+def _resolve_published_parent_span_context(parent_node_execution_id: str) -> dict[str, str]:
+    """Load a previously published tool-span carrier for nested workflow parenting."""
+    raw_carrier = redis_client.get(_phoenix_parent_span_redis_key(parent_node_execution_id))
+    if raw_carrier is None:
+        raise PendingPhoenixParentSpanContextError(parent_node_execution_id)
+
+    if isinstance(raw_carrier, bytes):
+        raw_carrier = raw_carrier.decode("utf-8")
+
+    carrier = json.loads(raw_carrier)
+    if not isinstance(carrier, dict):
+        raise ValueError(
+            "Phoenix parent span context must be stored as a JSON object: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    normalized_carrier = {str(key): str(value) for key, value in carrier.items()}
+    if not normalized_carrier:
+        raise ValueError(
+            "Phoenix parent span context payload is empty: "
+            f"parent_node_execution_id={parent_node_execution_id}"
+        )
+
+    return normalized_carrier
 
 
 def setup_tracer(arize_phoenix_config: ArizeConfig | PhoenixConfig) -> tuple[trace_sdk.Tracer, SimpleSpanProcessor]:
@@ -403,12 +459,13 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             workflow_session_id,
         )
 
-        root_trace_id = _resolve_workflow_root_trace_id(trace_info)
-        root_carrier = self.ensure_root_span(root_trace_id)
+        if parent_node_execution_id:
+            workflow_parent_carrier = _resolve_published_parent_span_context(parent_node_execution_id)
+        else:
+            root_trace_id = _resolve_workflow_root_trace_id(trace_info)
+            workflow_parent_carrier = self.ensure_root_span(root_trace_id)
 
-        # Transitional Phoenix-local fallback: keep nested workflows aligned
-        # until upstream tracing exposes explicit parent workflow session wiring.
-        workflow_span_context = self.propagator.extract(carrier=root_carrier)
+        workflow_span_context = self.propagator.extract(carrier=workflow_parent_carrier)
 
         workflow_span = self.tracer.start_span(
             name=TraceTaskName.WORKFLOW_TRACE.value,
@@ -549,6 +606,11 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                     context=workflow_span_context,
                 )
                 span_by_execution_id[execution_id] = node_span
+                if node_execution.node_type == "tool":
+                    parent_span_carrier: dict[str, str] = {}
+                    with use_span(node_span, end_on_exit=False):
+                        self.propagator.inject(carrier=parent_span_carrier)
+                    _publish_parent_span_context(execution_id, parent_span_carrier)
 
                 try:
                     if node_execution.node_type == "llm":
