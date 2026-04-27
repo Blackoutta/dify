@@ -39,8 +39,9 @@ def process_trace_tasks(self, file_info):
     Async process trace tasks
     Usage: process_trace_tasks.delay(tasks_data)
     """
-    from core.ops.ops_trace_manager import OpsTraceManager
     from dify_trace_arize_phoenix.arize_phoenix_trace import PendingPhoenixParentSpanContextError
+
+    from core.ops.ops_trace_manager import OpsTraceManager
 
     app_id = file_info.get("app_id")
     file_id = file_info.get("file_id")

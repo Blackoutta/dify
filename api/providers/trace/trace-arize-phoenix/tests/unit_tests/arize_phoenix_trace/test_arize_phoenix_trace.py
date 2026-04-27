@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -219,7 +219,7 @@ def trace_instance():
         mock_setup.return_value = (mock_tracer, mock_processor)
         config = ArizeConfig(endpoint="http://a.com", api_key="k", space_id="s", project="p")
         instance = ArizePhoenixDataTrace(config)
-        instance._mock_redis_client = mock_redis
+        cast(Any, instance)._mock_redis_client = mock_redis
         yield instance
 
 
@@ -378,9 +378,7 @@ def test_workflow_trace_uses_workflow_run_id_for_root_span_and_populates_root_in
         trace_instance.workflow_trace(info)
 
     root_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="workflow-run-xyz")
-    assert root_span_call.kwargs["attributes"][SpanAttributes.INPUT_VALUE] == safe_json_dumps(
-        info.workflow_run_inputs
-    )
+    assert root_span_call.kwargs["attributes"][SpanAttributes.INPUT_VALUE] == safe_json_dumps(info.workflow_run_inputs)
     assert root_span_call.kwargs["attributes"][SpanAttributes.OUTPUT_VALUE] == safe_json_dumps(
         info.workflow_run_outputs
     )

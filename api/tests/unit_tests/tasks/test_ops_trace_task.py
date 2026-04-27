@@ -1,14 +1,14 @@
 import json
 import sys
 from contextlib import contextmanager
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 from celery.exceptions import Retry
+from dify_trace_arize_phoenix.arize_phoenix_trace import PendingPhoenixParentSpanContextError
 
 from core.ops.entities.config_entity import OPS_TRACE_FAILED_KEY
-from dify_trace_arize_phoenix.arize_phoenix_trace import PendingPhoenixParentSpanContextError
 from tasks.ops_trace_task import process_trace_tasks
 
 
