@@ -306,12 +306,30 @@ class _NodeExecutionLike(Protocol):
     node_execution_id: str
     node_id: str
     node_type: str
+    title: str | None
     predecessor_node_id: str | None
     iteration_id: str | None
     loop_id: str | None
 
 
 _PHOENIX_STRUCTURED_NODE_TYPES = frozenset({"start", "end", "loop", "iteration"})
+
+
+def _resolve_workflow_span_name(trace_info: WorkflowTraceInfo) -> str:
+    """Resolve the Phoenix workflow span display name."""
+    workflow_run_id = trace_info.workflow_run_id.strip() if trace_info.workflow_run_id else ""
+    if workflow_run_id:
+        return f"{TraceTaskName.WORKFLOW_TRACE.value}_{workflow_run_id}"
+    return TraceTaskName.WORKFLOW_TRACE.value
+
+
+def _resolve_workflow_node_span_name(node_execution: _NodeExecutionLike) -> str:
+    """Resolve the Phoenix workflow node span display name."""
+    node_type = str(node_execution.node_type or "")
+    node_title = node_execution.title.strip() if isinstance(node_execution.title, str) else ""
+    if node_title:
+        return f"{node_type}_{node_title}"
+    return node_type
 
 
 def _get_node_execution_id(node_execution: _NodeExecutionLike) -> str:
@@ -525,7 +543,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         workflow_span_context = self.propagator.extract(carrier=workflow_parent_carrier)
 
         workflow_span = self.tracer.start_span(
-            name=TraceTaskName.WORKFLOW_TRACE.value,
+            name=_resolve_workflow_span_name(trace_info),
             attributes={
                 SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
                 SpanAttributes.INPUT_VALUE: safe_json_dumps(trace_info.workflow_run_inputs),
@@ -650,7 +668,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 )
                 workflow_span_context = set_span_in_context(parent_span)
                 node_span = self.tracer.start_span(
-                    name=node_execution.node_type,
+                    name=_resolve_workflow_node_span_name(node_execution),
                     attributes={
                         SpanAttributes.OPENINFERENCE_SPAN_KIND: span_kind.value,
                         SpanAttributes.INPUT_VALUE: safe_json_dumps(inputs_value),

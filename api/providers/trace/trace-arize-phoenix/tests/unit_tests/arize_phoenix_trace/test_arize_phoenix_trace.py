@@ -347,9 +347,7 @@ def test_workflow_trace_uses_canonical_root_context_for_top_level_workflow(
         },
     )
     mock_extract.assert_called_once_with(carrier=root_carrier)
-    workflow_span_call = _get_start_span_call(
-        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
-    )
+    workflow_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="workflow_workflow-run-1")
     assert workflow_span_call.kwargs["context"] is root_context
 
 
@@ -460,9 +458,7 @@ def test_workflow_trace_reuses_upstream_parent_workflow_context_when_no_parent_n
         },
     )
     mock_extract.assert_called_once_with(carrier=parent_carrier)
-    workflow_span_call = _get_start_span_call(
-        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
-    )
+    workflow_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="workflow_workflow-run-1")
     assert workflow_span_call.kwargs["context"] is parent_context
 
 
@@ -508,9 +504,7 @@ def test_workflow_trace_uses_published_parent_node_context_for_nested_workflow(
     mock_extract.assert_called_once_with(
         carrier={"traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"}
     )
-    workflow_span_call = _get_start_span_call(
-        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
-    )
+    workflow_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="workflow_workflow-run-1")
     assert workflow_span_call.kwargs["context"] is parent_context
 
 
@@ -589,13 +583,37 @@ def test_workflow_trace_uses_parent_workflow_run_id_for_workflow_and_nodes_when_
     with patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()):
         trace_instance.workflow_trace(info)
 
-    workflow_span_call = _get_start_span_call(
-        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
-    )
-    node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool")
+    workflow_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="workflow_r1")
+    node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool_Tool node")
 
     assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "outer-workflow-run-1"
     assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "outer-workflow-run-1"
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_falls_back_to_node_type_when_node_title_is_blank(
+    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info()
+    repo = MagicMock()
+    node_execution = _make_node_execution(
+        id="node-execution-1",
+        node_execution_id="node-execution-1",
+        node_id="node-1",
+        node_type="tool",
+        title=" ",
+    )
+    repo.get_by_workflow_execution.return_value = [node_execution]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    with patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()):
+        trace_instance.workflow_trace(info)
+
+    node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool")
+    assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "r1"
 
 
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
@@ -647,10 +665,8 @@ def test_workflow_trace_keeps_nested_conversation_session_while_reusing_parent_r
         },
     )
     mock_extract.assert_called_once_with(carrier=parent_carrier)
-    workflow_span_call = _get_start_span_call(
-        trace_instance.tracer.start_span, span_name=TraceTaskName.WORKFLOW_TRACE.value
-    )
-    node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool")
+    workflow_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="workflow_workflow-run-1")
+    node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool_Node")
     assert workflow_span_call.kwargs["context"] is parent_context
     assert workflow_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-1"
     assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "conversation-1"
@@ -817,8 +833,8 @@ def test_workflow_trace_parents_serial_nodes_to_resolved_predecessor_span(
     ):
         trace_instance.workflow_trace(info)
 
-    first_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool")
-    second_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm")
+    first_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool_Node")
+    second_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm_Node")
     assert first_node_call.kwargs["context"] == "context:workflow"
     assert second_node_call.kwargs["context"] == "context:node-1"
 
@@ -880,7 +896,7 @@ def test_workflow_trace_parents_structured_start_nodes_to_enclosing_structure_sp
     ):
         trace_instance.workflow_trace(info)
 
-    start_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="start")
+    start_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="start_Node")
     assert start_node_call.kwargs["context"] == f"context:{enclosing_node_type}"
 
 
@@ -976,7 +992,7 @@ def test_workflow_trace_keeps_duplicate_body_node_children_under_enclosing_struc
     ):
         trace_instance.workflow_trace(info)
 
-    child_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm")
+    child_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm_Node")
     assert child_node_call.kwargs["context"] == f"context:{enclosing_node_type}"
 
 
@@ -1044,7 +1060,7 @@ def test_workflow_trace_falls_back_to_workflow_span_for_parallel_like_ambiguous_
     ):
         trace_instance.workflow_trace(info)
 
-    child_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm")
+    child_node_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="llm_Node")
     assert child_node_call.kwargs["context"] == "context:workflow"
 
 
