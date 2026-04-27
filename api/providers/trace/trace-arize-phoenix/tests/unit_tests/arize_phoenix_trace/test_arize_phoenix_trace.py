@@ -619,6 +619,46 @@ def test_workflow_trace_falls_back_to_node_type_when_node_title_is_blank(
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
 @patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
+def test_workflow_trace_prefers_workflow_graph_node_title_over_execution_title(
+    mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
+):
+    mock_db.engine = MagicMock()
+    info = _make_workflow_info(
+        workflow_data={
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "nested-tool-node",
+                        "data": {
+                            "type": "tool",
+                            "title": "nested workflow tool",
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    repo = MagicMock()
+    node_execution = _make_node_execution(
+        id="node-execution-1",
+        node_execution_id="node-execution-1",
+        node_id="nested-tool-node",
+        node_type="tool",
+        title="2",
+    )
+    repo.get_by_workflow_execution.return_value = [node_execution]
+    mock_repo_factory.create_workflow_node_execution_repository.return_value = repo
+
+    with patch.object(trace_instance, "get_service_account_with_tenant", return_value=MagicMock()):
+        trace_instance.workflow_trace(info)
+
+    node_span_call = _get_start_span_call(trace_instance.tracer.start_span, span_name="tool_nested workflow tool")
+    assert node_span_call.kwargs["attributes"][SpanAttributes.SESSION_ID] == "r1"
+
+
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.db")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.DifyCoreRepositoryFactory")
+@patch("dify_trace_arize_phoenix.arize_phoenix_trace.sessionmaker")
 def test_workflow_trace_keeps_nested_conversation_session_while_reusing_parent_root_context(
     mock_sessionmaker, mock_repo_factory, mock_db, trace_instance
 ):

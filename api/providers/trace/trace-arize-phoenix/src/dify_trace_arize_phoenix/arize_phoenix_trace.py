@@ -323,10 +323,45 @@ def _resolve_workflow_span_name(trace_info: WorkflowTraceInfo) -> str:
     return TraceTaskName.WORKFLOW_TRACE.value
 
 
-def _resolve_workflow_node_span_name(node_execution: _NodeExecutionLike) -> str:
+def _build_node_title_by_id(trace_info: WorkflowTraceInfo) -> dict[str, str]:
+    """Build an authoritative node-title index from the persisted workflow graph."""
+    workflow_data = trace_info.workflow_data
+    workflow_graph = getattr(workflow_data, "graph_dict", None)
+    if not isinstance(workflow_graph, Mapping):
+        workflow_graph = workflow_data.get("graph") if isinstance(workflow_data, Mapping) else None
+    if not isinstance(workflow_graph, Mapping):
+        return {}
+
+    graph_nodes = workflow_graph.get("nodes")
+    if not isinstance(graph_nodes, Sequence):
+        return {}
+
+    node_title_by_id: dict[str, str] = {}
+    for graph_node in graph_nodes:
+        if not isinstance(graph_node, Mapping):
+            continue
+        node_id = graph_node.get("id")
+        node_data = graph_node.get("data")
+        if not isinstance(node_id, str) or not isinstance(node_data, Mapping):
+            continue
+        node_title = node_data.get("title")
+        if isinstance(node_title, str) and node_title.strip():
+            node_title_by_id[node_id] = node_title.strip()
+
+    return node_title_by_id
+
+
+def _resolve_workflow_node_span_name(
+    node_execution: _NodeExecutionLike,
+    node_title_by_id: Mapping[str, str] | None = None,
+) -> str:
     """Resolve the Phoenix workflow node span display name."""
     node_type = str(node_execution.node_type or "")
-    node_title = node_execution.title.strip() if isinstance(node_execution.title, str) else ""
+    graph_node_title = None
+    if node_title_by_id is not None and isinstance(node_execution.node_id, str):
+        graph_node_title = node_title_by_id.get(node_execution.node_id)
+
+    node_title = graph_node_title or (node_execution.title.strip() if isinstance(node_execution.title, str) else "")
     if node_title:
         return f"{node_type}_{node_title}"
     return node_type
@@ -578,6 +613,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         workflow_node_executions = workflow_node_execution_repository.get_by_workflow_execution(
             workflow_execution_id=trace_info.workflow_run_id
         )
+        node_title_by_id = _build_node_title_by_id(trace_info)
         execution_id_by_node_id = _build_execution_id_by_node_id(workflow_node_executions)
         graph_parent_index = _build_graph_parent_index(workflow_node_executions)
         node_execution_by_execution_id = {
@@ -668,7 +704,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 )
                 workflow_span_context = set_span_in_context(parent_span)
                 node_span = self.tracer.start_span(
-                    name=_resolve_workflow_node_span_name(node_execution),
+                    name=_resolve_workflow_node_span_name(node_execution, node_title_by_id),
                     attributes={
                         SpanAttributes.OPENINFERENCE_SPAN_KIND: span_kind.value,
                         SpanAttributes.INPUT_VALUE: safe_json_dumps(inputs_value),
