@@ -5,6 +5,8 @@ from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
+from core.ops.trace_context import parent_trace_context_from_metadata
+
 
 class BaseTraceInfo(BaseModel):
     message_id: Optional[str] = None
@@ -25,6 +27,20 @@ class BaseTraceInfo(BaseModel):
         return ""
 
     model_config = ConfigDict(protected_namespaces=())
+
+    @property
+    def resolved_trace_id(self) -> str | None:
+        workflow_run_id = getattr(self, "workflow_run_id", None)
+        if isinstance(workflow_run_id, str) and workflow_run_id:
+            return workflow_run_id
+        return str(self.message_id) if self.message_id else None
+
+    @property
+    def resolved_parent_context(self) -> tuple[str | None, str | None]:
+        context = parent_trace_context_from_metadata(self.metadata)
+        if context is None:
+            return None, None
+        return context.parent_workflow_run_id, context.parent_node_execution_id
 
     @field_serializer("start_time", "end_time")
     def serialize_datetime(self, dt: datetime | None) -> str | None:

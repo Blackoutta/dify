@@ -122,6 +122,7 @@ class LoopNode(BaseNode[LoopNodeData]):
             max_execution_steps=dify_config.WORKFLOW_MAX_EXECUTION_STEPS,
             max_execution_time=dify_config.WORKFLOW_MAX_EXECUTION_TIME,
             thread_pool_id=self.thread_pool_id,
+            trace_session_id=self.trace_session_id,
         )
 
         start_at = datetime.now(UTC).replace(tzinfo=None)

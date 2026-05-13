@@ -5,9 +5,11 @@ import pytest
 from core.app.entities.app_invoke_entities import InvokeFrom
 from core.tools.entities.tool_entities import ToolInvokeMessage, ToolProviderType
 from core.tools.errors import ToolInvokeError
+from core.variables.segments import StringSegment
 from core.workflow.entities.node_entities import NodeRunResult
 from core.workflow.entities.variable_pool import VariablePool
 from core.workflow.entities.workflow_node_execution import WorkflowNodeExecutionStatus
+from core.workflow.enums import SystemVariableKey
 from core.workflow.graph_engine import Graph, GraphInitParams, GraphRuntimeState
 from core.workflow.nodes.answer import AnswerStreamGenerateRoute
 from core.workflow.nodes.end import EndStreamParam
@@ -18,7 +20,7 @@ from core.workflow.nodes.tool.entities import ToolNodeData
 from models import UserFrom, WorkflowType
 
 
-def _create_tool_node():
+def _create_tool_node(trace_session_id: str | None = None):
     data = ToolNodeData(
         title="Test Tool",
         tool_parameters={},
@@ -53,6 +55,7 @@ def _create_tool_node():
             user_from=UserFrom.ACCOUNT,
             invoke_from=InvokeFrom.SERVICE_API,
             call_depth=0,
+            trace_session_id=trace_session_id,
         ),
         graph=Graph(
             root_node_id="1",
@@ -76,6 +79,27 @@ def _create_tool_node():
 class MockToolRuntime:
     def get_merged_runtime_parameters(self):
         pass
+
+
+class ParentTraceRecordingWorkflowTool(MockToolRuntime):
+    parent_trace_context = None
+    cleared = False
+
+    def set_parent_trace_context(self, *, parent_workflow_run_id: str, parent_node_execution_id: str) -> None:
+        self.parent_trace_context = {
+            "parent_workflow_run_id": parent_workflow_run_id,
+            "parent_node_execution_id": parent_node_execution_id,
+        }
+
+    def clear_parent_trace_context(self) -> None:
+        self.cleared = True
+
+
+class TraceSessionRecordingWorkflowTool(ParentTraceRecordingWorkflowTool):
+    trace_session_id = None
+
+    def set_trace_session_id(self, trace_session_id: str | None) -> None:
+        self.trace_session_id = trace_session_id
 
 
 def mock_message_stream() -> Generator[ToolInvokeMessage, None, None]:
@@ -109,3 +133,40 @@ def test_tool_node_on_tool_invoke_error(monkeypatch: pytest.MonkeyPatch):
     assert "oops" in result.error
     assert "Failed to transform tool message:" in result.error
     assert result.error_type == "ToolInvokeError"
+
+
+def test_tool_node_attaches_parent_context_to_workflow_tool(monkeypatch: pytest.MonkeyPatch):
+    tool_node = _create_tool_node()
+    tool_node.graph_runtime_state.variable_pool.add(
+        ["sys", SystemVariableKey.WORKFLOW_EXECUTION_ID.value],
+        StringSegment(value="outer-run"),
+    )
+    tool_runtime = ParentTraceRecordingWorkflowTool()
+
+    monkeypatch.setattr(
+        "core.tools.tool_manager.ToolManager.get_workflow_tool_runtime",
+        lambda *args, **kwargs: tool_runtime,
+    )
+    monkeypatch.setattr("core.tools.tool_engine.ToolEngine.generic_invoke", lambda *args, **kwargs: iter(()))
+
+    list(tool_node._run())
+
+    assert tool_runtime.parent_trace_context == {
+        "parent_workflow_run_id": "outer-run",
+        "parent_node_execution_id": "outer-run:1",
+    }
+
+
+def test_tool_node_attaches_trace_session_id_to_supported_tool_runtime(monkeypatch: pytest.MonkeyPatch):
+    tool_node = _create_tool_node(trace_session_id="external-session")
+    tool_runtime = TraceSessionRecordingWorkflowTool()
+
+    monkeypatch.setattr(
+        "core.tools.tool_manager.ToolManager.get_workflow_tool_runtime",
+        lambda *args, **kwargs: tool_runtime,
+    )
+    monkeypatch.setattr("core.tools.tool_engine.ToolEngine.generic_invoke", lambda *args, **kwargs: iter(()))
+
+    list(tool_node._run())
+
+    assert tool_runtime.trace_session_id == "external-session"

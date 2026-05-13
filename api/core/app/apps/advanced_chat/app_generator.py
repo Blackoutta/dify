@@ -24,6 +24,7 @@ from core.app.entities.app_invoke_entities import AdvancedChatAppGenerateEntity,
 from core.app.entities.task_entities import ChatbotAppBlockingResponse, ChatbotAppStreamResponse
 from core.model_runtime.errors.invoke import InvokeAuthorizationError
 from core.ops.ops_trace_manager import TraceQueueManager
+from core.ops.trace_context import extract_trace_session_id_from_args
 from core.prompt.utils.get_thread_messages_length import get_thread_messages_length
 from core.repositories import SQLAlchemyWorkflowNodeExecutionRepository
 from core.repositories.sqlalchemy_workflow_execution_repository import SQLAlchemyWorkflowExecutionRepository
@@ -112,7 +113,10 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
         query = query.replace("\x00", "")
         inputs = args["inputs"]
 
-        extras = {"auto_generate_conversation_name": args.get("auto_generate_name", False)}
+        extras = {
+            "auto_generate_conversation_name": args.get("auto_generate_name", False),
+            **extract_trace_session_id_from_args(args),
+        }
 
         # get conversation
         conversation = None

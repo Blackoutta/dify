@@ -29,13 +29,34 @@ from core.ops.entities.trace_entity import (
     TraceTaskName,
     WorkflowTraceInfo,
 )
+from core.ops.trace_context import ParentTraceContext
 from core.ops.utils import get_message_data
 from core.workflow.entities.workflow_execution import WorkflowExecution
 from extensions.ext_database import db
 from extensions.ext_storage import storage
+from models.account import Tenant
 from models.model import App, AppModelConfig, Conversation, Message, MessageFile, TraceAppConfig
 from models.workflow import WorkflowAppLog, WorkflowRun
 from tasks.ops_trace_task import process_trace_tasks
+
+
+def _lookup_app_and_workspace_names(app_id: str | None, tenant_id: str | None) -> tuple[str, str]:
+    app_name = ""
+    workspace_name = ""
+    if not app_id and not tenant_id:
+        return app_name, workspace_name
+
+    with Session(db.engine) as session:
+        if app_id:
+            resolved_app_name = session.scalar(select(App.name).where(App.id == app_id))
+            if resolved_app_name:
+                app_name = str(resolved_app_name)
+        if tenant_id:
+            resolved_workspace_name = session.scalar(select(Tenant.name).where(Tenant.id == tenant_id))
+            if resolved_workspace_name:
+                workspace_name = str(resolved_workspace_name)
+
+    return app_name, workspace_name
 
 
 class OpsTraceProviderConfigMap(dict[str, dict[str, Any]]):
@@ -434,7 +455,7 @@ class TraceTask:
             TraceTaskName.WORKFLOW_TRACE: lambda: self.workflow_trace(
                 workflow_run_id=self.workflow_run_id, conversation_id=self.conversation_id, user_id=self.user_id
             ),
-            TraceTaskName.MESSAGE_TRACE: lambda: self.message_trace(message_id=self.message_id),
+            TraceTaskName.MESSAGE_TRACE: lambda: self.message_trace(message_id=self.message_id, **self.kwargs),
             TraceTaskName.MODERATION_TRACE: lambda: self.moderation_trace(
                 message_id=self.message_id, timer=self.timer, **self.kwargs
             ),
@@ -505,6 +526,12 @@ class TraceTask:
                 )
                 message_id = session.scalar(message_data_stmt)
 
+            try:
+                app_name, workspace_name = _lookup_app_and_workspace_names(workflow_run.app_id, tenant_id)
+            except Exception:
+                logging.exception("Failed to lookup app/workspace names for workflow trace")
+                app_name, workspace_name = "", ""
+
             metadata = {
                 "workflow_id": workflow_id,
                 "conversation_id": conversation_id,
@@ -518,7 +545,17 @@ class TraceTask:
                 "triggered_from": workflow_run.triggered_from,
                 "user_id": user_id,
                 "app_id": workflow_run.app_id,
+                "app_name": app_name,
+                "workspace_name": workspace_name,
             }
+            parent_trace_context = self.kwargs.get("parent_trace_context")
+            if isinstance(parent_trace_context, ParentTraceContext):
+                metadata["parent_trace_context"] = parent_trace_context.model_dump()
+            elif isinstance(parent_trace_context, dict):
+                metadata["parent_trace_context"] = parent_trace_context
+            trace_session_id = self.kwargs.get("trace_session_id")
+            if isinstance(trace_session_id, str) and trace_session_id:
+                metadata["trace_session_id"] = trace_session_id
 
             workflow_trace_info = WorkflowTraceInfo(
                 workflow_data=workflow_run.to_dict(),
@@ -543,7 +580,7 @@ class TraceTask:
             )
         return workflow_trace_info
 
-    def message_trace(self, message_id: str | None):
+    def message_trace(self, message_id: str | None, **kwargs):
         if not message_id:
             return {}
         message_data = get_message_data(message_id)
@@ -576,6 +613,9 @@ class TraceTask:
             "from_source": message_data.from_source,
             "message_id": message_id,
         }
+        trace_session_id = kwargs.get("trace_session_id")
+        if isinstance(trace_session_id, str) and trace_session_id:
+            metadata["trace_session_id"] = trace_session_id
 
         message_tokens = message_data.message_tokens
 

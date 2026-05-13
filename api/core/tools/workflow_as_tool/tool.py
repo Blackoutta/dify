@@ -6,6 +6,7 @@ from typing import Any, Optional, cast
 from flask_login import current_user
 
 from core.file import FILE_MODEL_IDENTITY, File, FileTransferMethod
+from core.ops.trace_context import ParentTraceContext, extract_parent_trace_context_from_args
 from core.tools.__base.tool import Tool
 from core.tools.__base.tool_runtime import ToolRuntime
 from core.tools.entities.tool_entities import (
@@ -31,6 +32,8 @@ class WorkflowTool(Tool):
     workflow_call_depth: int
     thread_pool_id: Optional[str] = None
     workflow_as_tool_id: str
+    _parent_trace_context: ParentTraceContext | None
+    _trace_session_id: str | None
 
     label: str
 
@@ -57,6 +60,8 @@ class WorkflowTool(Tool):
         self.workflow_call_depth = workflow_call_depth
         self.thread_pool_id = thread_pool_id
         self.label = label
+        self._parent_trace_context = None
+        self._trace_session_id = None
 
         super().__init__(entity=entity, runtime=runtime)
 
@@ -91,11 +96,19 @@ class WorkflowTool(Tool):
         assert self.runtime is not None
         assert self.runtime.invoke_from is not None
 
+        generator_args: dict[str, Any] = {"inputs": tool_parameters, "files": files}
+        if self._parent_trace_context is not None:
+            generator_args.update(
+                extract_parent_trace_context_from_args({"parent_trace_context": self._parent_trace_context})
+            )
+        if self._trace_session_id:
+            generator_args["trace_session_id"] = self._trace_session_id
+
         result = generator.generate(
             app_model=app,
             workflow=workflow,
             user=cast("Account | EndUser", current_user),
-            args={"inputs": tool_parameters, "files": files},
+            args=generator_args,
             invoke_from=self.runtime.invoke_from,
             streaming=False,
             call_depth=self.workflow_call_depth + 1,
@@ -124,7 +137,7 @@ class WorkflowTool(Tool):
 
         :return: the new tool
         """
-        return self.__class__(
+        forked = self.__class__(
             entity=self.entity.model_copy(),
             runtime=runtime,
             workflow_app_id=self.workflow_app_id,
@@ -134,6 +147,26 @@ class WorkflowTool(Tool):
             version=self.version,
             label=self.label,
         )
+        forked._parent_trace_context = self._parent_trace_context.model_copy() if self._parent_trace_context else None
+        forked._trace_session_id = self._trace_session_id
+        return forked
+
+    def set_parent_trace_context(
+        self,
+        *,
+        parent_workflow_run_id: str,
+        parent_node_execution_id: str,
+    ) -> None:
+        self._parent_trace_context = ParentTraceContext(
+            parent_workflow_run_id=parent_workflow_run_id,
+            parent_node_execution_id=parent_node_execution_id,
+        )
+
+    def clear_parent_trace_context(self) -> None:
+        self._parent_trace_context = None
+
+    def set_trace_session_id(self, trace_session_id: str | None) -> None:
+        self._trace_session_id = trace_session_id
 
     def _get_workflow(self, app_id: str, version: str) -> Workflow:
         """

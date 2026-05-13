@@ -21,6 +21,7 @@ from core.app.apps.message_based_app_queue_manager import MessageBasedAppQueueMa
 from core.app.entities.app_invoke_entities import AgentChatAppGenerateEntity, InvokeFrom
 from core.model_runtime.errors.invoke import InvokeAuthorizationError
 from core.ops.ops_trace_manager import TraceQueueManager
+from core.ops.trace_context import extract_trace_session_id_from_args
 from extensions.ext_database import db
 from factories import file_factory
 from libs.flask_utils import preserve_flask_contexts
@@ -95,7 +96,10 @@ class AgentChatAppGenerator(MessageBasedAppGenerator):
         query = query.replace("\x00", "")
         inputs = args["inputs"]
 
-        extras = {"auto_generate_conversation_name": args.get("auto_generate_name", True)}
+        extras = {
+            "auto_generate_conversation_name": args.get("auto_generate_name", True),
+            **extract_trace_session_id_from_args(args),
+        }
 
         # get conversation
         conversation = None

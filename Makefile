@@ -39,5 +39,10 @@ build-push-web: build-web push-web
 build-push-all: build-all push-all
 	@echo "All Docker images have been built and pushed."
 
+dev-down:
+	@echo "Stopping Docker middleware containers..."
+	@cd docker && docker compose -f docker-compose.middleware.yaml --env-file middleware.env -p dify-middlewares-dev down
+	@echo "Cleanup complete."
+
 # Phony targets
-.PHONY: build-web build-api push-web push-api build-all push-all build-push-all
+.PHONY: build-web build-api push-web push-api build-all push-all build-push-all dev-down

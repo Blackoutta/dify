@@ -498,6 +498,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                 if not graph_runtime_state:
                     raise ValueError("workflow run not initialized.")
 
+                parent_trace_context = self._application_generate_entity.extras.get("parent_trace_context")
+                trace_session_id = self._application_generate_entity.extras.get("trace_session_id")
                 with Session(db.engine, expire_on_commit=False) as session:
                     workflow_execution = self._workflow_cycle_manager.handle_workflow_run_success(
                         workflow_run_id=self._workflow_run_id,
@@ -506,6 +508,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                         outputs=event.outputs,
                         conversation_id=self._conversation_id,
                         trace_manager=trace_manager,
+                        parent_trace_context=parent_trace_context,
+                        trace_session_id=trace_session_id,
                     )
 
                     workflow_finish_resp = self._workflow_response_converter.workflow_finish_to_stream_response(
@@ -524,6 +528,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                 if not graph_runtime_state:
                     raise ValueError("graph runtime state not initialized.")
 
+                parent_trace_context = self._application_generate_entity.extras.get("parent_trace_context")
+                trace_session_id = self._application_generate_entity.extras.get("trace_session_id")
                 with Session(db.engine, expire_on_commit=False) as session:
                     workflow_execution = self._workflow_cycle_manager.handle_workflow_run_partial_success(
                         workflow_run_id=self._workflow_run_id,
@@ -533,6 +539,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                         exceptions_count=event.exceptions_count,
                         conversation_id=None,
                         trace_manager=trace_manager,
+                        parent_trace_context=parent_trace_context,
+                        trace_session_id=trace_session_id,
                     )
                     workflow_finish_resp = self._workflow_response_converter.workflow_finish_to_stream_response(
                         session=session,
@@ -550,6 +558,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                 if not graph_runtime_state:
                     raise ValueError("graph runtime state not initialized.")
 
+                parent_trace_context = self._application_generate_entity.extras.get("parent_trace_context")
+                trace_session_id = self._application_generate_entity.extras.get("trace_session_id")
                 with Session(db.engine, expire_on_commit=False) as session:
                     workflow_execution = self._workflow_cycle_manager.handle_workflow_run_failed(
                         workflow_run_id=self._workflow_run_id,
@@ -560,6 +570,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                         conversation_id=self._conversation_id,
                         trace_manager=trace_manager,
                         exceptions_count=event.exceptions_count,
+                        parent_trace_context=parent_trace_context,
+                        trace_session_id=trace_session_id,
                     )
                     workflow_finish_resp = self._workflow_response_converter.workflow_finish_to_stream_response(
                         session=session,
@@ -576,6 +588,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                 break
             elif isinstance(event, QueueStopEvent):
                 if self._workflow_run_id and graph_runtime_state:
+                    parent_trace_context = self._application_generate_entity.extras.get("parent_trace_context")
+                    trace_session_id = self._application_generate_entity.extras.get("trace_session_id")
                     with Session(db.engine, expire_on_commit=False) as session:
                         workflow_execution = self._workflow_cycle_manager.handle_workflow_run_failed(
                             workflow_run_id=self._workflow_run_id,
@@ -585,6 +599,8 @@ class AdvancedChatAppGenerateTaskPipeline:
                             error_message=event.get_stop_reason(),
                             conversation_id=self._conversation_id,
                             trace_manager=trace_manager,
+                            parent_trace_context=parent_trace_context,
+                            trace_session_id=trace_session_id,
                         )
                         workflow_finish_resp = self._workflow_response_converter.workflow_finish_to_stream_response(
                             session=session,

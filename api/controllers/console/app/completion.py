@@ -110,6 +110,7 @@ class ChatMessageApi(Resource):
         parser.add_argument("parent_message_id", type=uuid_value, required=False, location="json")
         parser.add_argument("response_mode", type=str, choices=["blocking", "streaming"], location="json")
         parser.add_argument("retriever_from", type=str, required=False, default="dev", location="json")
+        parser.add_argument("trace_session_id", type=str, required=False, location="json")
         args = parser.parse_args()
 
         streaming = args["response_mode"] != "blocking"

@@ -107,6 +107,7 @@ class GraphEngine:
         max_execution_steps: int,
         max_execution_time: int,
         thread_pool_id: Optional[str] = None,
+        trace_session_id: str | None = None,
     ) -> None:
         thread_pool_max_submit_count = dify_config.MAX_SUBMIT_COUNT
         thread_pool_max_workers = 10
@@ -138,6 +139,7 @@ class GraphEngine:
             user_from=user_from,
             invoke_from=invoke_from,
             call_depth=call_depth,
+            trace_session_id=trace_session_id,
         )
 
         self.graph_runtime_state = graph_runtime_state

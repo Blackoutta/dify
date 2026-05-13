@@ -45,6 +45,7 @@ class BaseNode(Generic[GenericNodeData]):
         self.user_from = graph_init_params.user_from
         self.invoke_from = graph_init_params.invoke_from
         self.workflow_call_depth = graph_init_params.call_depth
+        self.trace_session_id = graph_init_params.trace_session_id
         self.graph = graph
         self.graph_runtime_state = graph_runtime_state
         self.previous_node_id = previous_node_id

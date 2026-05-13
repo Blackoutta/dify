@@ -47,6 +47,7 @@ class WorkflowEntry:
         call_depth: int,
         variable_pool: VariablePool,
         thread_pool_id: Optional[str] = None,
+        trace_session_id: str | None = None,
     ) -> None:
         """
         Init workflow entry
@@ -62,6 +63,7 @@ class WorkflowEntry:
         :param call_depth: call depth
         :param variable_pool: variable pool
         :param thread_pool_id: thread pool id
+        :param trace_session_id: external trace session id
         """
         # check call depth
         workflow_call_max_depth = dify_config.WORKFLOW_CALL_MAX_DEPTH
@@ -85,6 +87,7 @@ class WorkflowEntry:
             max_execution_steps=dify_config.WORKFLOW_MAX_EXECUTION_STEPS,
             max_execution_time=dify_config.WORKFLOW_MAX_EXECUTION_TIME,
             thread_pool_id=thread_pool_id,
+            trace_session_id=trace_session_id,
         )
 
     def run(

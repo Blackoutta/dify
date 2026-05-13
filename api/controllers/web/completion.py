@@ -102,6 +102,7 @@ class ChatApi(WebApiResource):
         parser.add_argument("conversation_id", type=uuid_value, location="json")
         parser.add_argument("parent_message_id", type=uuid_value, required=False, location="json")
         parser.add_argument("retriever_from", type=str, required=False, default="web_app", location="json")
+        parser.add_argument("trace_session_id", type=str, required=False, location="json")
 
         args = parser.parse_args()
 

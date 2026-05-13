@@ -23,6 +23,7 @@ from core.app.entities.app_invoke_entities import InvokeFrom, WorkflowAppGenerat
 from core.app.entities.task_entities import WorkflowAppBlockingResponse, WorkflowAppStreamResponse
 from core.model_runtime.errors.invoke import InvokeAuthorizationError
 from core.ops.ops_trace_manager import TraceQueueManager
+from core.ops.trace_context import extract_parent_trace_context_from_args, extract_trace_session_id_from_args
 from core.repositories import SQLAlchemyWorkflowNodeExecutionRepository
 from core.repositories.sqlalchemy_workflow_execution_repository import SQLAlchemyWorkflowExecutionRepository
 from core.workflow.repositories.draft_variable_repository import DraftVariableSaverFactory
@@ -124,6 +125,10 @@ class WorkflowAppGenerator(BaseAppGenerator):
 
         inputs: Mapping[str, Any] = args["inputs"]
         workflow_run_id = str(uuid.uuid4())
+        extras = {
+            **extract_parent_trace_context_from_args(args),
+            **extract_trace_session_id_from_args(args),
+        }
         # init application generate entity
         application_generate_entity = WorkflowAppGenerateEntity(
             task_id=str(uuid.uuid4()),
@@ -140,6 +145,7 @@ class WorkflowAppGenerator(BaseAppGenerator):
             stream=streaming,
             invoke_from=invoke_from,
             call_depth=call_depth,
+            extras=extras,
             trace_manager=trace_manager,
             workflow_execution_id=workflow_run_id,
         )

@@ -61,6 +61,8 @@ Workflow applications offers non-session support and is ideal for translation, a
         - `streaming` Streaming mode (recommended), implements a typewriter-like output through SSE ([Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)).
         - `blocking` Blocking mode, returns result after execution is complete. (Requests may be interrupted if the process is long)
         <i>Due to Cloudflare restrictions, the request will be interrupted without a return after 100 seconds.</i>
+      - `trace_session_id` (string) Optional
+        Optional Phoenix tracing session override. This only sets the OpenInference `session.id` exported to Phoenix and does not create or resume a Dify conversation.
       - `user` (string) Required
         User identifier, used to define the identity of the end-user for retrieval and statistics.
         Should be uniquely defined by the developer within the application.
@@ -184,7 +186,7 @@ Workflow applications offers non-session support and is ideal for translation, a
 
   </Col>
   <Col sticky>
-     <CodeGroup title="Request" tag="POST" label="/workflows/run" targetCode={`curl -X POST '${props.appDetail.api_base_url}/workflows/run' \\\n--header 'Authorization: Bearer {api_key}' \\\n--header 'Content-Type: application/json' \\\n--data-raw '{\n    "inputs": ${JSON.stringify(props.inputs)},\n    "response_mode": "streaming",\n    "user": "abc-123"\n}'\n`}>
+     <CodeGroup title="Request" tag="POST" label="/workflows/run" targetCode={`curl -X POST '${props.appDetail.api_base_url}/workflows/run' \\\n--header 'Authorization: Bearer {api_key}' \\\n--header 'Content-Type: application/json' \\\n--data-raw '{\n    "inputs": ${JSON.stringify(props.inputs)},\n    "response_mode": "streaming",\n    "trace_session_id": "external-session-123",\n    "user": "abc-123"\n}'\n`}>
 
     ```bash {{ title: 'cURL' }}
     curl -X POST '${props.appDetail.api_base_url}/workflows/run' \
@@ -193,6 +195,7 @@ Workflow applications offers non-session support and is ideal for translation, a
     --data-raw '{
         "inputs": {},
         "response_mode": "streaming",
+        "trace_session_id": "external-session-123",
         "user": "abc-123"
     }'
     ```

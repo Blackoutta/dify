@@ -17,6 +17,7 @@ from core.app.entities.queue_entities import (
 from core.app.task_pipeline.exc import WorkflowRunNotFoundError
 from core.ops.entities.trace_entity import TraceTaskName
 from core.ops.ops_trace_manager import TraceQueueManager, TraceTask
+from core.ops.trace_context import ParentTraceContext
 from core.workflow.entities.workflow_execution import WorkflowExecution, WorkflowExecutionStatus, WorkflowType
 from core.workflow.entities.workflow_node_execution import (
     WorkflowNodeExecution,
@@ -90,6 +91,8 @@ class WorkflowCycleManager:
         outputs: Mapping[str, Any] | None = None,
         conversation_id: Optional[str] = None,
         trace_manager: Optional[TraceQueueManager] = None,
+        parent_trace_context: ParentTraceContext | None = None,
+        trace_session_id: str | None = None,
     ) -> WorkflowExecution:
         workflow_execution = self._get_workflow_execution_or_raise_error(workflow_run_id)
 
@@ -108,6 +111,8 @@ class WorkflowCycleManager:
                     workflow_execution=workflow_execution,
                     conversation_id=conversation_id,
                     user_id=trace_manager.user_id,
+                    parent_trace_context=parent_trace_context,
+                    trace_session_id=trace_session_id,
                 )
             )
 
@@ -124,6 +129,8 @@ class WorkflowCycleManager:
         exceptions_count: int = 0,
         conversation_id: Optional[str] = None,
         trace_manager: Optional[TraceQueueManager] = None,
+        parent_trace_context: ParentTraceContext | None = None,
+        trace_session_id: str | None = None,
     ) -> WorkflowExecution:
         execution = self._get_workflow_execution_or_raise_error(workflow_run_id)
         # outputs = WorkflowEntry.handle_special_values(dict(outputs) if outputs else None)
@@ -142,6 +149,8 @@ class WorkflowCycleManager:
                     workflow_execution=execution,
                     conversation_id=conversation_id,
                     user_id=trace_manager.user_id,
+                    parent_trace_context=parent_trace_context,
+                    trace_session_id=trace_session_id,
                 )
             )
 
@@ -159,6 +168,8 @@ class WorkflowCycleManager:
         conversation_id: Optional[str] = None,
         trace_manager: Optional[TraceQueueManager] = None,
         exceptions_count: int = 0,
+        parent_trace_context: ParentTraceContext | None = None,
+        trace_session_id: str | None = None,
     ) -> WorkflowExecution:
         workflow_execution = self._get_workflow_execution_or_raise_error(workflow_run_id)
         now = naive_utc_now()
@@ -194,6 +205,8 @@ class WorkflowCycleManager:
                     workflow_execution=workflow_execution,
                     conversation_id=conversation_id,
                     user_id=trace_manager.user_id,
+                    parent_trace_context=parent_trace_context,
+                    trace_session_id=trace_session_id,
                 )
             )
 

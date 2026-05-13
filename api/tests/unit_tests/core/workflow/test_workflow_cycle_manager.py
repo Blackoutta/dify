@@ -237,6 +237,35 @@ def test_handle_workflow_run_success(workflow_cycle_manager, mock_workflow_execu
     assert result.finished_at is not None
 
 
+def test_handle_workflow_run_success_adds_trace_session_id_to_trace_task(
+    workflow_cycle_manager, mock_workflow_execution_repository
+):
+    workflow_execution = WorkflowExecution(
+        id_="test-workflow-run-id",
+        workflow_id="test-workflow-id",
+        workflow_version="1.0",
+        workflow_type=WorkflowType.CHAT,
+        graph={"nodes": [], "edges": []},
+        inputs={"query": "test query"},
+        started_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    workflow_cycle_manager._workflow_execution_repository.get.return_value = workflow_execution
+    trace_manager = MagicMock()
+    trace_manager.user_id = "test-user-id"
+
+    workflow_cycle_manager.handle_workflow_run_success(
+        workflow_run_id="test-workflow-run-id",
+        total_tokens=100,
+        total_steps=5,
+        outputs={"answer": "test answer"},
+        trace_manager=trace_manager,
+        trace_session_id="external-session",
+    )
+
+    trace_task = trace_manager.add_trace_task.call_args.args[0]
+    assert trace_task.kwargs["trace_session_id"] == "external-session"
+
+
 def test_handle_workflow_run_failed(workflow_cycle_manager, mock_workflow_execution_repository):
     """Test handle_workflow_run_failed method"""
     # Create a real WorkflowExecution
@@ -273,6 +302,37 @@ def test_handle_workflow_run_failed(workflow_cycle_manager, mock_workflow_execut
     assert result.total_tokens == 50
     assert result.total_steps == 3
     assert result.finished_at is not None
+
+
+def test_handle_workflow_run_failed_adds_trace_session_id_to_trace_task(
+    workflow_cycle_manager, mock_workflow_execution_repository
+):
+    workflow_execution = WorkflowExecution(
+        id_="test-workflow-run-id",
+        workflow_id="test-workflow-id",
+        workflow_version="1.0",
+        workflow_type=WorkflowType.CHAT,
+        graph={"nodes": [], "edges": []},
+        inputs={"query": "test query"},
+        started_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    workflow_cycle_manager._workflow_execution_repository.get.return_value = workflow_execution
+    workflow_cycle_manager._workflow_node_execution_repository.get_running_executions.return_value = []
+    trace_manager = MagicMock()
+    trace_manager.user_id = "test-user-id"
+
+    workflow_cycle_manager.handle_workflow_run_failed(
+        workflow_run_id="test-workflow-run-id",
+        total_tokens=50,
+        total_steps=3,
+        status=WorkflowExecutionStatus.FAILED,
+        error_message="Test error message",
+        trace_manager=trace_manager,
+        trace_session_id="external-session",
+    )
+
+    trace_task = trace_manager.add_trace_task.call_args.args[0]
+    assert trace_task.kwargs["trace_session_id"] == "external-session"
 
 
 def test_handle_node_execution_start(workflow_cycle_manager, mock_workflow_execution_repository):
@@ -434,6 +494,36 @@ def test_handle_workflow_run_partial_success(workflow_cycle_manager, mock_workfl
     assert result.total_steps == 4
     assert result.exceptions_count == 2
     assert result.finished_at is not None
+
+
+def test_handle_workflow_run_partial_success_adds_trace_session_id_to_trace_task(
+    workflow_cycle_manager, mock_workflow_execution_repository
+):
+    workflow_execution = WorkflowExecution(
+        id_="test-workflow-run-id",
+        workflow_id="test-workflow-id",
+        workflow_version="1.0",
+        workflow_type=WorkflowType.CHAT,
+        graph={"nodes": [], "edges": []},
+        inputs={"query": "test query"},
+        started_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    workflow_cycle_manager._workflow_execution_repository.get.return_value = workflow_execution
+    trace_manager = MagicMock()
+    trace_manager.user_id = "test-user-id"
+
+    workflow_cycle_manager.handle_workflow_run_partial_success(
+        workflow_run_id="test-workflow-run-id",
+        total_tokens=75,
+        total_steps=4,
+        outputs={"partial_answer": "test partial answer"},
+        exceptions_count=2,
+        trace_manager=trace_manager,
+        trace_session_id="external-session",
+    )
+
+    trace_task = trace_manager.add_trace_task.call_args.args[0]
+    assert trace_task.kwargs["trace_session_id"] == "external-session"
 
 
 def test_handle_workflow_node_execution_failed(workflow_cycle_manager):

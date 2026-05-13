@@ -9,7 +9,7 @@ from core.file import File, FileTransferMethod
 from core.model_runtime.entities.llm_entities import LLMUsage
 from core.plugin.impl.exc import PluginDaemonClientSideError
 from core.plugin.impl.plugin import PluginInstaller
-from core.tools.entities.tool_entities import ToolInvokeMessage, ToolParameter
+from core.tools.entities.tool_entities import ToolInvokeMessage, ToolParameter, ToolProviderType
 from core.tools.errors import ToolInvokeError
 from core.tools.tool_engine import ToolEngine
 from core.tools.utils.message_transformer import ToolFileMessageTransformer
@@ -98,6 +98,21 @@ class ToolNode(BaseNode[ToolNodeData]):
         )
         # get conversation id
         conversation_id = self.graph_runtime_state.variable_pool.get(["sys", SystemVariableKey.CONVERSATION_ID])
+        workflow_run_var = self.graph_runtime_state.variable_pool.get(
+            ["sys", SystemVariableKey.WORKFLOW_EXECUTION_ID.value]
+        )
+        outer_workflow_run_id = workflow_run_var.text if workflow_run_var else None
+        if node_data.provider_type == ToolProviderType.WORKFLOW and outer_workflow_run_id:
+            parent_node_execution_id = f"{outer_workflow_run_id}:{self.id}"
+            if hasattr(tool_runtime, "set_parent_trace_context"):
+                tool_runtime.set_parent_trace_context(
+                    parent_workflow_run_id=outer_workflow_run_id,
+                    parent_node_execution_id=parent_node_execution_id,
+                )
+        elif hasattr(tool_runtime, "clear_parent_trace_context"):
+            tool_runtime.clear_parent_trace_context()
+        if hasattr(tool_runtime, "set_trace_session_id"):
+            tool_runtime.set_trace_session_id(self.trace_session_id)
 
         try:
             message_stream = ToolEngine.generic_invoke(

@@ -19,3 +19,4 @@ class GraphInitParams(BaseModel):
     user_from: UserFrom = Field(..., description="user from, account or end-user")
     invoke_from: InvokeFrom = Field(..., description="invoke from, service-api, web-app, explore or debugger")
     call_depth: int = Field(..., description="call depth")
+    trace_session_id: str | None = Field(None, description="external trace session id")

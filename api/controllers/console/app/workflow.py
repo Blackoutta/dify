@@ -182,6 +182,7 @@ class AdvancedChatDraftWorkflowRunApi(Resource):
         parser.add_argument("files", type=list, location="json")
         parser.add_argument("conversation_id", type=uuid_value, location="json")
         parser.add_argument("parent_message_id", type=uuid_value, required=False, location="json")
+        parser.add_argument("trace_session_id", type=str, required=False, location="json")
 
         args = parser.parse_args()
 
@@ -371,6 +372,7 @@ class DraftWorkflowRunApi(Resource):
         parser = reqparse.RequestParser()
         parser.add_argument("inputs", type=dict, required=True, nullable=False, location="json")
         parser.add_argument("files", type=list, required=False, location="json")
+        parser.add_argument("trace_session_id", type=str, required=False, location="json")
         args = parser.parse_args()
 
         try:
