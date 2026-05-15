@@ -16,6 +16,12 @@ from libs.helper import extract_tenant_id
 from models import Account, EndUser
 
 
+def _init_redis_instrumentor(tracer_provider):
+    from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+    RedisInstrumentor().instrument(tracer_provider=tracer_provider)
+
+
 @user_logged_in.connect
 @user_loaded_from_request.connect
 def on_user_loaded(_sender, user: Union["Account", "EndUser"]):
@@ -225,6 +231,7 @@ def init_app(app: DifyApp):
         CeleryInstrumentor(tracer_provider=get_tracer_provider(), meter_provider=get_meter_provider()).instrument()
     instrument_exception_logging()
     init_sqlalchemy_instrumentor(app)
+    _init_redis_instrumentor(get_tracer_provider())
     atexit.register(shutdown_tracer)
 
 

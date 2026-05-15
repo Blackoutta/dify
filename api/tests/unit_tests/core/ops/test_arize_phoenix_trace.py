@@ -5,11 +5,16 @@ from types import SimpleNamespace
 import pytest
 from openinference.semconv.trace import OpenInferenceMimeTypeValues, SpanAttributes
 from opentelemetry import trace
-from opentelemetry.trace import StatusCode
+from opentelemetry.sdk import trace as trace_sdk
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from opentelemetry.trace import NonRecordingSpan, SpanContext, StatusCode, TraceFlags, TraceState, use_span
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from core.ops.arize_phoenix_trace.arize_phoenix_trace import (
     ArizePhoenixDataTrace,
+    _app_uses_phoenix_provider,
     _build_parent_span_bridge_id,
+    _parent_workflow_can_publish_span_context,
     _resolve_node_parent_span,
     _resolve_published_parent_span_context,
     _resolve_session_id,
@@ -53,6 +58,29 @@ class _FakeTracer:
         span.parent_name = parent.name if isinstance(parent, _FakeSpan) else None
         self.spans.append(span)
         return span
+
+
+class _CollectingSpanExporter(SpanExporter):
+    def __init__(self):
+        self.spans = []
+
+    def export(self, spans):
+        self.spans.extend(spans)
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self):
+        return None
+
+
+class _FakeQuery:
+    def __init__(self, result):
+        self._result = result
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return self._result
 
 
 def _make_trace_instance(monkeypatch, nodes=None):
@@ -237,6 +265,45 @@ def test_missing_parent_span_context_raises_retryable_error(monkeypatch):
         _resolve_published_parent_span_context("outer-run:tool-node")
 
 
+def test_app_uses_phoenix_provider_only_for_enabled_arize_or_phoenix():
+    assert _app_uses_phoenix_provider({"enabled": True, "tracing_provider": "phoenix"}) is True
+    assert _app_uses_phoenix_provider({"enabled": True, "tracing_provider": "arize"}) is True
+    assert _app_uses_phoenix_provider({"enabled": False, "tracing_provider": "phoenix"}) is False
+    assert _app_uses_phoenix_provider({"enabled": True, "tracing_provider": "langfuse"}) is False
+    assert _app_uses_phoenix_provider(None) is False
+
+
+def test_parent_workflow_can_publish_span_context_keeps_unknown_parent_retryable(monkeypatch):
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.db.session.query",
+        lambda model: _FakeQuery(None),
+    )
+
+    assert _parent_workflow_can_publish_span_context("missing-run") is True
+
+
+def test_parent_workflow_can_publish_span_context_checks_parent_app_tracing(monkeypatch):
+    parent_run = SimpleNamespace(app_id="parent-app")
+    parent_app = SimpleNamespace(tracing=json.dumps({"enabled": True, "tracing_provider": "phoenix"}))
+
+    def fake_query(model):
+        if getattr(model, "__tablename__", None) == "workflow_runs":
+            return _FakeQuery(parent_run)
+        if getattr(model, "__tablename__", None) == "apps":
+            return _FakeQuery(parent_app)
+        raise AssertionError(f"Unexpected model query: {model}")
+
+    monkeypatch.setattr("core.ops.arize_phoenix_trace.arize_phoenix_trace.db.session.query", fake_query)
+
+    assert _parent_workflow_can_publish_span_context("parent-run") is True
+
+    parent_app.tracing = json.dumps({"enabled": False, "tracing_provider": "phoenix"})
+    assert _parent_workflow_can_publish_span_context("parent-run") is False
+
+    parent_app.tracing = json.dumps({"enabled": True, "tracing_provider": "langfuse"})
+    assert _parent_workflow_can_publish_span_context("parent-run") is False
+
+
 def test_invalid_parent_span_context_rejected(monkeypatch):
     monkeypatch.setattr(
         "core.ops.arize_phoenix_trace.arize_phoenix_trace.redis_client.get",
@@ -308,6 +375,60 @@ def test_nested_workflow_trace_uses_published_parent_context(monkeypatch):
 
     assert tracer.spans[0].name == "nested_Child_Workflow_child-ru"
     assert tracer.spans[0].attributes[SpanAttributes.SESSION_ID] == "outer-run"
+
+
+def test_nested_workflow_trace_falls_back_when_parent_app_tracing_disabled(monkeypatch):
+    instance, tracer = _make_trace_instance(monkeypatch)
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.redis_client.get",
+        lambda key: None,
+    )
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace._parent_workflow_can_publish_span_context",
+        lambda parent_workflow_run_id: False,
+    )
+
+    instance.workflow_trace(
+        _make_workflow_trace_info(
+            workflow_run_id="child-run-123456",
+            metadata={
+                "app_name": "Child Workflow",
+                "parent_trace_context": {
+                    "parent_workflow_run_id": "outer-run",
+                    "parent_node_execution_id": "outer-run:tool-exec-id",
+                },
+            },
+        )
+    )
+
+    assert [span.name for span in tracer.spans] == ["child-run-123456", "nested_Child_Workflow_child-ru"]
+    assert tracer.spans[1].attributes[SpanAttributes.SESSION_ID] == "outer-run"
+
+
+def test_nested_workflow_trace_still_retries_when_parent_app_can_publish_context(monkeypatch):
+    instance, _ = _make_trace_instance(monkeypatch)
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.redis_client.get",
+        lambda key: None,
+    )
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace._parent_workflow_can_publish_span_context",
+        lambda parent_workflow_run_id: True,
+    )
+
+    with pytest.raises(PendingTraceParentContextError):
+        instance.workflow_trace(
+            _make_workflow_trace_info(
+                workflow_run_id="child-run-123456",
+                metadata={
+                    "app_name": "Child Workflow",
+                    "parent_trace_context": {
+                        "parent_workflow_run_id": "outer-run",
+                        "parent_node_execution_id": "outer-run:tool-exec-id",
+                    },
+                },
+            )
+        )
 
 
 def test_nested_workflow_trace_keeps_parent_carrier_and_prefers_trace_session_id(monkeypatch):
@@ -390,6 +511,34 @@ def test_workflow_root_span_uses_workflow_time_bounds(monkeypatch):
     assert tracer.spans[0].name == "workflow-run-123456"
     assert tracer.spans[0].start_time == datetime_to_nanos(trace_info.start_time)
     assert tracer.spans[0].end_time == datetime_to_nanos(trace_info.end_time)
+
+
+def test_root_span_ignores_unsampled_ambient_otel_parent():
+    exporter = _CollectingSpanExporter()
+    provider = trace_sdk.TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    instance = ArizePhoenixDataTrace.__new__(ArizePhoenixDataTrace)
+    instance.tracer = provider.get_tracer("test")
+    instance.project = "test"
+    instance.propagator = TraceContextTextMapPropagator()
+    instance.dify_trace_ids = set()
+    instance.root_span_carriers = {}
+    instance.carrier = {}
+
+    unsampled_context = SpanContext(
+        trace_id=1,
+        span_id=2,
+        is_remote=False,
+        trace_flags=TraceFlags(0),
+        trace_state=TraceState(),
+    )
+
+    with use_span(NonRecordingSpan(unsampled_context), end_on_exit=False):
+        instance.ensure_root_span("workflow-run-123456", root_span_name="workflow-run-123456")
+
+    assert [span.name for span in exporter.spans] == ["workflow-run-123456"]
+    assert exporter.spans[0].context.trace_flags.sampled
 
 
 def test_workflow_trace_ignores_malformed_llm_outputs(monkeypatch):

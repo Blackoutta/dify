@@ -9,6 +9,7 @@ from typing import Any, Optional, Union, cast
 
 from openinference.semconv.trace import OpenInferenceMimeTypeValues, OpenInferenceSpanKindValues, SpanAttributes
 from opentelemetry import trace
+from opentelemetry.context import Context
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as GrpcOTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter as HttpOTLPSpanExporter
 from opentelemetry.sdk import trace as trace_sdk
@@ -35,8 +36,8 @@ from core.ops.exceptions import PendingTraceParentContextError
 from core.ops.trace_context import parent_trace_context_from_metadata
 from extensions.ext_database import db
 from extensions.ext_redis import redis_client
-from models.model import EndUser, MessageFile
-from models.workflow import WorkflowNodeExecutionModel
+from models.model import App, EndUser, MessageFile
+from models.workflow import WorkflowNodeExecutionModel, WorkflowRun
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +345,47 @@ def _resolve_published_parent_span_context(parent_node_execution_id: str) -> dic
     return normalized_carrier
 
 
+def _app_uses_phoenix_provider(app_tracing_config: Mapping[str, Any] | None) -> bool:
+    if not app_tracing_config or not app_tracing_config.get("enabled"):
+        return False
+    return app_tracing_config.get("tracing_provider") in {"arize", "phoenix"}
+
+
+def _parent_workflow_can_publish_span_context(parent_workflow_run_id: str) -> bool:
+    parent_run = db.session.query(WorkflowRun).filter(WorkflowRun.id == parent_workflow_run_id).first()
+    if parent_run is None:
+        return True
+
+    parent_app = db.session.query(App).filter(App.id == parent_run.app_id).first()
+    if parent_app is None or not parent_app.tracing:
+        return False
+
+    try:
+        app_tracing_config = json.loads(parent_app.tracing)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(app_tracing_config, Mapping):
+        return False
+
+    return _app_uses_phoenix_provider(app_tracing_config)
+
+
+def _resolve_workflow_parent_carrier(
+    parent_node_execution_id: str,
+    parent_workflow_run_id: str | None,
+) -> dict[str, str] | None:
+    try:
+        return _resolve_published_parent_span_context(parent_node_execution_id)
+    except PendingTraceParentContextError:
+        if parent_workflow_run_id and not _parent_workflow_can_publish_span_context(parent_workflow_run_id):
+            logger.info(
+                "[Arize/Phoenix] Parent workflow %s cannot publish parent span context; using fallback root",
+                parent_workflow_run_id,
+            )
+            return None
+        raise
+
+
 def setup_tracer(arize_phoenix_config: ArizeConfig | PhoenixConfig) -> tuple[trace_sdk.Tracer, SimpleSpanProcessor]:
     """Configure OpenTelemetry tracer with OTLP exporter for Arize/Phoenix."""
     try:
@@ -477,9 +519,12 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             parent_workflow_run_id=parent_workflow_run_id,
         )
 
-        if parent_node_execution_id:
-            carrier = _resolve_published_parent_span_context(parent_node_execution_id)
-        else:
+        carrier = (
+            _resolve_workflow_parent_carrier(parent_node_execution_id, parent_workflow_run_id)
+            if parent_node_execution_id
+            else None
+        )
+        if carrier is None:
             trace_id_source = parent_workflow_run_id or trace_info.workflow_run_id or trace_info.message_id
             carrier = self.ensure_root_span(
                 trace_id_source,
@@ -1155,7 +1200,12 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             if root_span_attributes:
                 attributes.update(root_span_attributes)
 
-            root_span = self.tracer.start_span(name=span_name, attributes=attributes, start_time=start_time)
+            root_span = self.tracer.start_span(
+                name=span_name,
+                attributes=attributes,
+                start_time=start_time,
+                context=Context(),
+            )
             with use_span(root_span, end_on_exit=False):
                 self.propagator.inject(carrier=carrier)
             _set_span_status(root_span)
