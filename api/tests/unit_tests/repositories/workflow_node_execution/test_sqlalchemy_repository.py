@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 from pytest_mock import MockerFixture
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from core.model_runtime.utils.encoders import jsonable_encoder
@@ -51,6 +52,13 @@ def session():
     session_factory = MagicMock(spec=sessionmaker)
     session_factory.return_value = session
     return session, session_factory
+
+
+def _session():
+    session = MagicMock(spec=Session)
+    session.__enter__ = MagicMock(return_value=session)
+    session.__exit__ = MagicMock(return_value=None)
+    return session
 
 
 @pytest.fixture
@@ -135,6 +143,50 @@ def test_save_with_existing_tenant_id(repository, session):
 
     # Assert session.merge was called with the modified execution (now using merge for both save and update)
     session_obj.merge.assert_called_once_with(modified_execution)
+
+
+def test_save_retries_transient_commit_error(repository, monkeypatch):
+    monkeypatch.setattr("core.repositories.sqlalchemy_retry._sleep_before_retry", MagicMock())
+
+    first_session = _session()
+    second_session = _session()
+    first_session.commit.side_effect = OperationalError(
+        "UPDATE workflow_node_executions",
+        {},
+        RuntimeError("db restarting"),
+    )
+
+    db_model = MagicMock(spec=WorkflowNodeExecutionModel)
+    db_model.node_execution_id = "test-node-execution-id"
+    repository.to_db_model = MagicMock(return_value=db_model)
+    repository._session_factory.side_effect = [first_session, second_session]
+
+    repository.save(MagicMock(spec=WorkflowNodeExecution))
+
+    assert repository._session_factory.call_count == 2
+    first_session.merge.assert_called_once_with(db_model)
+    first_session.commit.assert_called_once()
+    second_session.merge.assert_called_once_with(db_model)
+    second_session.commit.assert_called_once()
+    assert repository._node_execution_cache["test-node-execution-id"] is db_model
+
+
+def test_save_logs_error_for_db_exception_without_retry(repository, caplog):
+    session = _session()
+    session.commit.side_effect = SQLAlchemyError("db constraint failed")
+
+    db_model = MagicMock(spec=WorkflowNodeExecutionModel)
+    db_model.node_execution_id = "test-node-execution-id"
+    repository.to_db_model = MagicMock(return_value=db_model)
+    repository._session_factory.return_value = session
+
+    with pytest.raises(SQLAlchemyError, match="db constraint failed"):
+        repository.save(MagicMock(spec=WorkflowNodeExecution))
+
+    repository._session_factory.assert_called_once()
+    session.commit.assert_called_once()
+    assert "Workflow node execution persistence error" in caplog.text
+    assert "test-node-execution-id" in caplog.text
 
 
 def test_get_by_node_execution_id(repository, session, mocker: MockerFixture):

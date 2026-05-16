@@ -12,6 +12,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
 from core.model_runtime.utils.encoders import jsonable_encoder
+from core.repositories.sqlalchemy_retry import execute_with_db_retry
 from core.workflow.entities.workflow_node_execution import (
     WorkflowNodeExecution,
     WorkflowNodeExecutionMetadataKey,
@@ -205,18 +206,25 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         # Convert domain model to database model using tenant context and other attributes
         db_model = self.to_db_model(execution)
 
-        # Create a new database session
-        with self._session_factory() as session:
+        def operation(session):
             # SQLAlchemy merge intelligently handles both insert and update operations
             # based on the presence of the primary key
             session.merge(db_model)
             session.commit()
 
-            # Update the in-memory cache for faster subsequent lookups
-            # Only cache if we have a node_execution_id to use as the cache key
-            if db_model.node_execution_id:
-                logger.debug(f"Updating cache for node_execution_id: {db_model.node_execution_id}")
-                self._node_execution_cache[db_model.node_execution_id] = db_model
+        execute_with_db_retry(
+            session_factory=self._session_factory,
+            operation=operation,
+            logger=logger,
+            operation_name="Workflow node execution",
+            context=f"node_execution_id {db_model.node_execution_id or db_model.id}",
+        )
+
+        # Update the in-memory cache for faster subsequent lookups
+        # Only cache if we have a node_execution_id to use as the cache key
+        if db_model.node_execution_id:
+            logger.debug(f"Updating cache for node_execution_id: {db_model.node_execution_id}")
+            self._node_execution_cache[db_model.node_execution_id] = db_model
 
     def get_by_node_execution_id(self, node_execution_id: str) -> Optional[WorkflowNodeExecution]:
         """

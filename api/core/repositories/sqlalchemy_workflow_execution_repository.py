@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
+from core.repositories.sqlalchemy_retry import execute_with_db_retry
 from core.workflow.entities.workflow_execution import (
     WorkflowExecution,
     WorkflowExecutionStatus,
@@ -196,16 +197,21 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
         # Convert domain model to database model using tenant context and other attributes
         db_model = self._to_db_model(execution)
 
-        # Create a new database session
-        with self._session_factory() as session:
-            # SQLAlchemy merge intelligently handles both insert and update operations
-            # based on the presence of the primary key
+        def operation(session):
             session.merge(db_model)
             session.commit()
 
-            # Update the in-memory cache for faster subsequent lookups
-            logger.debug(f"Updating cache for execution_id: {db_model.id}")
-            self._execution_cache[db_model.id] = db_model
+        execute_with_db_retry(
+            session_factory=self._session_factory,
+            operation=operation,
+            logger=logger,
+            operation_name="Workflow execution",
+            context=f"execution_id {db_model.id}",
+        )
+
+        # Update the in-memory cache for faster subsequent lookups
+        logger.debug(f"Updating cache for execution_id: {db_model.id}")
+        self._execution_cache[db_model.id] = db_model
 
     def get(self, execution_id: str) -> Optional[WorkflowExecution]:
         """
