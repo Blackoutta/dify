@@ -706,6 +706,40 @@ def test_workflow_trace_publishes_parent_span_aliases_for_tool_nodes(monkeypatch
     ]
 
 
+def test_workflow_trace_keeps_sequential_nodes_as_workflow_children(monkeypatch):
+    start = _make_node_execution(
+        id="start-row-id",
+        node_execution_id="start-exec-id",
+        node_id="start-node",
+        title="START",
+        node_type="start",
+        process_data="{}",
+    )
+    llm = _make_node_execution(
+        id="llm-row-id",
+        node_execution_id="llm-exec-id",
+        node_id="llm-node",
+        predecessor_node_id="start-node",
+        title="LLM",
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[start, llm])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    assert [span.name for span in tracer.spans] == [
+        "workflow-run-123456",
+        "Root_Chat_workflow",
+        "start",
+        "llm_gpt",
+    ]
+    assert tracer.spans[2].parent_name == "Root_Chat_workflow"
+    assert tracer.spans[3].parent_name == "Root_Chat_workflow"
+
+
 def test_workflow_trace_parents_container_children_to_loop_when_predecessor_missing(monkeypatch):
     loop = SimpleNamespace(
         id="loop-row-id",

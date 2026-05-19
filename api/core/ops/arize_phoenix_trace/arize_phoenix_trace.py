@@ -271,22 +271,6 @@ def _build_execution_id_by_node_id(node_executions: list[Any]) -> dict[str, str]
     return execution_id_by_node_id
 
 
-def _build_graph_parent_index(node_executions: list[Any]) -> dict[str, str]:
-    execution_id_by_node_id = _build_execution_id_by_node_id(node_executions)
-    graph_parent_index: dict[str, str] = {}
-
-    for node_execution in node_executions:
-        predecessor_node_id = getattr(node_execution, "predecessor_node_id", None)
-        if not isinstance(predecessor_node_id, str):
-            continue
-
-        predecessor_execution_id = execution_id_by_node_id.get(predecessor_node_id)
-        if predecessor_execution_id is not None:
-            graph_parent_index[_get_node_execution_id(node_execution)] = predecessor_execution_id
-
-    return graph_parent_index
-
-
 def _resolve_structured_parent_execution_id(
     node_execution: Any,
     node_metadata: Mapping[str, Any],
@@ -306,18 +290,10 @@ def _resolve_structured_parent_execution_id(
 
 def _resolve_node_parent_span_by_execution(
     *,
-    execution_id: str,
     structured_parent_execution_id: str | None,
     span_by_execution_id: Mapping[str, Any],
-    graph_parent_index: Mapping[str, str],
     workflow_span: Any,
 ) -> Any:
-    graph_parent_execution_id = graph_parent_index.get(execution_id)
-    if graph_parent_execution_id is not None:
-        graph_parent_span = span_by_execution_id.get(graph_parent_execution_id)
-        if graph_parent_span is not None:
-            return graph_parent_span
-
     if structured_parent_execution_id is not None:
         structured_parent_span = span_by_execution_id.get(structured_parent_execution_id)
         if structured_parent_span is not None:
@@ -332,10 +308,6 @@ def _resolve_node_parent_span(
     node_spans_by_node_id: Mapping[str, Any],
     workflow_span: Any,
 ) -> Any:
-    predecessor_node_id = getattr(node_execution, "predecessor_node_id", None)
-    if predecessor_node_id and predecessor_node_id in node_spans_by_node_id:
-        return node_spans_by_node_id[str(predecessor_node_id)]
-
     node_id = str(getattr(node_execution, "node_id", "") or "")
     for container_key in ("loop_id", "iteration_id"):
         container_id = node_metadata.get(container_key)
@@ -597,7 +569,6 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             # Process workflow nodes
             workflow_nodes = list(self._get_workflow_nodes(trace_info.workflow_run_id))
             execution_id_by_node_id = _build_execution_id_by_node_id(workflow_nodes)
-            graph_parent_index = _build_graph_parent_index(workflow_nodes)
             node_execution_by_execution_id = {
                 _get_node_execution_id(node_execution): node_execution for node_execution in workflow_nodes
             }
@@ -639,15 +610,12 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 if execution_id not in emitting_execution_ids:
                     emitting_execution_ids.add(execution_id)
                     try:
-                        for parent_execution_id in (
-                            graph_parent_index.get(execution_id),
-                            structured_parent_execution_id,
+                        if (
+                            structured_parent_execution_id is not None
+                            and structured_parent_execution_id != execution_id
+                            and structured_parent_execution_id not in span_by_execution_id
                         ):
-                            if parent_execution_id is None or parent_execution_id == execution_id:
-                                continue
-                            if parent_execution_id in span_by_execution_id:
-                                continue
-                            parent_node_execution = node_execution_by_execution_id.get(parent_execution_id)
+                            parent_node_execution = node_execution_by_execution_id.get(structured_parent_execution_id)
                             if parent_node_execution is not None:
                                 emit_node_span(parent_node_execution)
                     finally:
@@ -678,10 +646,8 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                     span_kind = OpenInferenceSpanKindValues.CHAIN.value
 
                 node_parent_span = _resolve_node_parent_span_by_execution(
-                    execution_id=execution_id,
                     structured_parent_execution_id=structured_parent_execution_id,
                     span_by_execution_id=span_by_execution_id,
-                    graph_parent_index=graph_parent_index,
                     workflow_span=workflow_span,
                 )
                 node_context = trace.set_span_in_context(node_parent_span)
