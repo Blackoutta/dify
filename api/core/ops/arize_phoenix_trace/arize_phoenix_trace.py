@@ -163,11 +163,37 @@ def _attribute_value(value: Any) -> str | int | float | bool:
 
 
 def _prefixed_attributes(prefix: str, values: Mapping[str, Any]) -> dict[str, str | int | float | bool]:
-    return {
-        f"{prefix}.{key}": _attribute_value(value)
-        for key, value in values.items()
-        if value is not None
-    }
+    return {f"{prefix}.{key}": _attribute_value(value) for key, value in values.items() if value is not None}
+
+
+def _json_attribute_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _build_llm_input_message_attributes(prompts: Any) -> dict[str, str]:
+    attributes: dict[str, str] = {}
+    if isinstance(prompts, list):
+        for index, prompt in enumerate(prompts):
+            if not isinstance(prompt, Mapping):
+                continue
+            role = prompt.get("role", "user")
+            content = prompt.get("text", prompt.get("content", ""))
+            attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.{index}.message.role"] = (
+                role if isinstance(role, str) else "user"
+            )
+            attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.{index}.message.content"] = _json_attribute_value(content)
+        return attributes
+
+    if isinstance(prompts, Mapping):
+        attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.0.message.role"] = "user"
+        attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.0.message.content"] = _json_attribute_value(prompts)
+    elif isinstance(prompts, str):
+        attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.0.message.role"] = "user"
+        attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.0.message.content"] = prompts
+
+    return attributes
 
 
 def _set_span_status(span: Any, error: Exception | str | None = None) -> None:
@@ -659,10 +685,16 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                     workflow_span=workflow_span,
                 )
                 node_context = trace.set_span_in_context(node_parent_span)
+                llm_prompts = process_data.get("prompts") if node_execution.node_type == "llm" else None
+                node_input_value = (
+                    json.dumps(llm_prompts, ensure_ascii=False, default=str)
+                    if llm_prompts is not None
+                    else node_execution.inputs or "{}"
+                )
                 node_span = self.tracer.start_span(
                     name=_build_node_span_name(node_execution, process_data, node_metadata),
                     attributes={
-                        SpanAttributes.INPUT_VALUE: node_execution.inputs or "{}",
+                        SpanAttributes.INPUT_VALUE: node_input_value,
                         SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
                         SpanAttributes.OUTPUT_VALUE: node_execution.outputs or "{}",
                         SpanAttributes.OUTPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
@@ -684,6 +716,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                                 "iteration_id": node_metadata.get("iteration_id"),
                             },
                         ),
+                        **_build_llm_input_message_attributes(llm_prompts),
                     },
                     start_time=datetime_to_nanos(created_at),
                     context=node_context,
@@ -691,10 +724,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 span_by_execution_id[execution_id] = node_span
 
                 try:
-                    if (
-                        node_execution.node_type == "tool"
-                        and node_execution.workflow_run_id
-                    ):
+                    if node_execution.node_type == "tool" and node_execution.workflow_run_id:
                         carrier: dict[str, str] = {}
                         TraceContextTextMapPropagator().inject(
                             carrier=carrier,

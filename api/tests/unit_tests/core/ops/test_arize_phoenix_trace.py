@@ -572,6 +572,33 @@ def test_workflow_trace_ignores_malformed_llm_outputs(monkeypatch):
     ]
 
 
+def test_workflow_trace_uses_llm_process_prompts_as_llm_input(monkeypatch):
+    prompts = [
+        {"role": "system", "text": "You are concise."},
+        {"role": "user", "text": "hi"},
+    ]
+    node = _make_node_execution(
+        inputs="{}",
+        process_data=json.dumps(
+            {
+                "model_provider": "openai",
+                "model_name": "gpt",
+                "prompts": prompts,
+            }
+        ),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[node])
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    llm_attributes = tracer.spans[2].attributes
+    assert llm_attributes[SpanAttributes.INPUT_VALUE] == json.dumps(prompts, ensure_ascii=False)
+    assert llm_attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.0.message.role"] == "system"
+    assert llm_attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.0.message.content"] == "You are concise."
+    assert llm_attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.1.message.role"] == "user"
+    assert llm_attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.1.message.content"] == "hi"
+
+
 def test_workflow_trace_uses_source_style_node_names(monkeypatch):
     node = SimpleNamespace(
         id="node-exec-1",
