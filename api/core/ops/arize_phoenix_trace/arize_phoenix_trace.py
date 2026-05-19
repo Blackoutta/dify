@@ -635,6 +635,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 root_span_name=trace_info.workflow_run_id,
                 start_time=datetime_to_nanos(trace_info.start_time),
                 end_time=datetime_to_nanos(trace_info.end_time),
+                root_span_error=trace_info.error,
                 root_span_attributes={
                     SpanAttributes.INPUT_VALUE: json.dumps(trace_info.workflow_run_inputs, ensure_ascii=False),
                     SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
@@ -1355,6 +1356,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
         root_span_name: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        root_span_error: Exception | str | None = None,
         root_span_attributes: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
         trace_key = str(dify_trace_id)
@@ -1377,7 +1379,8 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             )
             with use_span(root_span, end_on_exit=False):
                 self.propagator.inject(carrier=carrier)
-            _set_span_status(root_span)
+            _record_exception_event(root_span, root_span_error)
+            _set_span_status(root_span, root_span_error)
             root_span.end(end_time=end_time)
 
             self.dify_trace_ids.add(trace_key)

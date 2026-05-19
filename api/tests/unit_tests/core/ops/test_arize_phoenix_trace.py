@@ -372,7 +372,19 @@ def test_workflow_trace_records_workflow_error_as_exception_event(monkeypatch):
         )
     )
 
+    root_span = tracer.spans[0]
     workflow_span = tracer.spans[1]
+    assert root_span.status.status_code == StatusCode.ERROR
+    assert root_span.events == [
+        (
+            "exception",
+            {
+                "exception.message": "Traceback (most recent call last):\nNameError: name 'missing' is not defined",
+                "exception.type": "Error",
+                "exception.stacktrace": "Traceback (most recent call last):\nNameError: name 'missing' is not defined",
+            },
+        )
+    ]
     assert workflow_span.status.status_code == StatusCode.ERROR
     assert workflow_span.events == [
         (
