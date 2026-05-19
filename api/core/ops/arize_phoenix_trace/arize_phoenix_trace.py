@@ -205,6 +205,21 @@ def _set_span_status(span: Any, error: Exception | str | None = None) -> None:
         span.set_status(Status(StatusCode.OK))
 
 
+def _record_exception_event(span: Any, error: Exception | str | None = None) -> None:
+    if not error:
+        return
+
+    error_message = str(error)
+    span.add_event(
+        "exception",
+        attributes={
+            "exception.message": error_message,
+            "exception.type": "Error",
+            "exception.stacktrace": error_message,
+        },
+    )
+
+
 def _publish_parent_span_context(parent_node_execution_id: str, carrier: Mapping[str, str]) -> None:
     redis_client.setex(
         _phoenix_parent_span_redis_key(parent_node_execution_id),
@@ -872,7 +887,9 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                                 SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, usage_data.get("completion_tokens", 0)
                             )
                 finally:
-                    _set_span_status(node_span, node_execution.error if node_execution.status != "succeeded" else None)
+                    node_error = node_execution.error if node_execution.status != "succeeded" else None
+                    _record_exception_event(node_span, node_error)
+                    _set_span_status(node_span, node_error)
                     node_span.end(end_time=datetime_to_nanos(finished_at))
                 return node_span
 
@@ -882,6 +899,7 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             finally:
                 finalize_wrapper_spans()
         finally:
+            _record_exception_event(workflow_span, trace_info.error)
             _set_span_status(workflow_span, trace_info.error)
             workflow_span.end(end_time=datetime_to_nanos(trace_info.end_time))
 

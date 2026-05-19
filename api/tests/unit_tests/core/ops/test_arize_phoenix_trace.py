@@ -35,6 +35,7 @@ class _FakeSpan:
         self.ended = False
         self.end_count = 0
         self.status = None
+        self.events = []
 
     def get_span_context(self):
         return trace.INVALID_SPAN_CONTEXT
@@ -44,6 +45,9 @@ class _FakeSpan:
 
     def set_status(self, status):
         self.status = status
+
+    def add_event(self, name, attributes=None):
+        self.events.append((name, attributes or {}))
 
     def end(self, end_time=None):
         self.end_time = end_time
@@ -356,6 +360,53 @@ def test_workflow_trace_creates_root_span_without_message_data(monkeypatch):
     assert tracer.spans[1].attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
     assert tracer.spans[1].attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
     assert tracer.spans[1].status.status_code == StatusCode.OK
+
+
+def test_workflow_trace_records_workflow_error_as_exception_event(monkeypatch):
+    instance, tracer = _make_trace_instance(monkeypatch)
+
+    instance.workflow_trace(
+        _make_workflow_trace_info(
+            workflow_run_status="failed",
+            error="Traceback (most recent call last):\nNameError: name 'missing' is not defined",
+        )
+    )
+
+    workflow_span = tracer.spans[1]
+    assert workflow_span.status.status_code == StatusCode.ERROR
+    assert workflow_span.events == [
+        (
+            "exception",
+            {
+                "exception.message": "Traceback (most recent call last):\nNameError: name 'missing' is not defined",
+                "exception.type": "Error",
+                "exception.stacktrace": "Traceback (most recent call last):\nNameError: name 'missing' is not defined",
+            },
+        )
+    ]
+
+
+def test_workflow_trace_records_failed_node_error_as_exception_event(monkeypatch):
+    failed_node = _make_node_execution(
+        status="failed",
+        error="Traceback (most recent call last):\nRuntimeError: node failed",
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[failed_node])
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    node_span = next(span for span in tracer.spans if span.name == "llm_gpt")
+    assert node_span.status.status_code == StatusCode.ERROR
+    assert node_span.events == [
+        (
+            "exception",
+            {
+                "exception.message": "Traceback (most recent call last):\nRuntimeError: node failed",
+                "exception.type": "Error",
+                "exception.stacktrace": "Traceback (most recent call last):\nRuntimeError: node failed",
+            },
+        )
+    ]
 
 
 def test_workflow_trace_uses_trace_session_id_for_root_workflow_and_node_spans(monkeypatch):
