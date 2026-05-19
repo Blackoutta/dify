@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +14,8 @@ from core.ops.arize_phoenix_trace.arize_phoenix_trace import (
     ArizePhoenixDataTrace,
     _app_uses_phoenix_provider,
     _build_parent_span_bridge_id,
+    _build_wrapper_groups,
+    _normalize_wrapper_index,
     _parent_workflow_can_publish_span_context,
     _resolve_node_parent_span,
     _resolve_published_parent_span_context,
@@ -31,6 +33,7 @@ class _FakeSpan:
         self.start_time = start_time
         self.end_time = None
         self.ended = False
+        self.end_count = 0
         self.status = None
 
     def get_span_context(self):
@@ -45,6 +48,7 @@ class _FakeSpan:
     def end(self, end_time=None):
         self.end_time = end_time
         self.ended = True
+        self.end_count += 1
 
 
 class _FakeTracer:
@@ -256,6 +260,32 @@ def test_resolve_session_id_uses_workflow_run_for_top_level_workflow():
 
 def test_build_parent_span_bridge_id_uses_workflow_run_and_node_id():
     assert _build_parent_span_bridge_id("outer-run", "tool-node") == "outer-run:tool-node"
+
+
+def test_normalize_wrapper_index_accepts_stable_values():
+    assert _normalize_wrapper_index(0) == "0"
+    assert _normalize_wrapper_index(12) == "12"
+    assert _normalize_wrapper_index("01") == "01"
+    assert _normalize_wrapper_index("branch-1_A.2:3") == "branch-1_A.2:3"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        True,
+        False,
+        -1,
+        1.0,
+        "",
+        " 1",
+        "1 ",
+        "group/1",
+        "group]1",
+        None,
+    ],
+)
+def test_normalize_wrapper_index_rejects_unstable_values(value):
+    assert _normalize_wrapper_index(value) is None
 
 
 def test_missing_parent_span_context_raises_retryable_error(monkeypatch):
@@ -706,6 +736,55 @@ def test_workflow_trace_publishes_parent_span_aliases_for_tool_nodes(monkeypatch
     ]
 
 
+def test_workflow_trace_tool_inside_wrapper_publishes_tool_span_carrier(monkeypatch):
+    loop = _make_node_execution(
+        id="loop-row-id",
+        node_execution_id="loop-exec-id",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    tool = _make_node_execution(
+        id="tool-row-id",
+        node_execution_id=None,
+        node_id="graph-tool-node",
+        title="Call Child",
+        node_type="tool",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 0}),
+    )
+    published_contexts = []
+    published_keys = []
+    published_carriers = []
+    instance, _ = _make_trace_instance(monkeypatch, nodes=[loop, tool])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.TraceContextTextMapPropagator",
+        lambda: SimpleNamespace(
+            inject=lambda carrier, context=None: published_contexts.append(getattr(context, "name", None))
+            or carrier.update({"traceparent": "fake"})
+        ),
+    )
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace._publish_parent_span_context",
+        lambda parent_node_execution_id, carrier: published_keys.append(parent_node_execution_id)
+        or published_carriers.append(dict(carrier)),
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    assert published_contexts == ["tool_Call_Child_tool"]
+    assert published_keys == [
+        "workflow-run-123456:tool-row-id",
+        "workflow-run-123456:graph-tool-node",
+    ]
+    assert published_carriers == [{"traceparent": "fake"}, {"traceparent": "fake"}]
+
+
 def test_workflow_trace_keeps_sequential_nodes_as_workflow_children(monkeypatch):
     start = _make_node_execution(
         id="start-row-id",
@@ -738,6 +817,77 @@ def test_workflow_trace_keeps_sequential_nodes_as_workflow_children(monkeypatch)
     ]
     assert tracer.spans[2].parent_name == "Root_Chat_workflow"
     assert tracer.spans[3].parent_name == "Root_Chat_workflow"
+
+
+def test_build_wrapper_groups_groups_loop_children_by_index():
+    loop = _make_node_execution(
+        id="loop-row-id",
+        node_execution_id="loop-exec-id",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    first = _make_node_execution(
+        id="template-row-id-0",
+        node_execution_id="template-exec-id-0",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 0}),
+    )
+    second = _make_node_execution(
+        id="template-row-id-1",
+        node_execution_id="template-exec-id-1",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 1}),
+    )
+
+    groups = _build_wrapper_groups([loop, first, second])
+
+    assert [(group.key.wrapper_type, group.key.index) for group in groups.values()] == [
+        ("loop", "0"),
+        ("loop", "1"),
+    ]
+    assert [group.container_execution_id for group in groups.values()] == ["loop-row-id", "loop-row-id"]
+    assert [group.child_execution_ids for group in groups.values()] == [
+        {"template-row-id-0"},
+        {"template-row-id-1"},
+    ]
+
+
+def test_build_wrapper_groups_skips_ambiguous_container_graph_ids():
+    first_loop = _make_node_execution(
+        id="loop-row-id-1",
+        node_execution_id="loop-exec-id-1",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    second_loop = _make_node_execution(
+        id="loop-row-id-2",
+        node_execution_id="loop-exec-id-2",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    child = _make_node_execution(
+        id="template-row-id",
+        node_execution_id="template-exec-id",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 0}),
+    )
+
+    assert _build_wrapper_groups([first_loop, second_loop, child]) == {}
 
 
 def test_workflow_trace_parents_container_children_to_loop_when_predecessor_missing(monkeypatch):
@@ -800,7 +950,7 @@ def test_workflow_trace_parents_container_children_to_loop_when_predecessor_miss
     )
 
 
-def test_workflow_trace_keeps_repeated_loop_body_nodes_under_loop(monkeypatch):
+def test_workflow_trace_groups_repeated_loop_body_nodes_by_index(monkeypatch):
     loop = SimpleNamespace(
         id="loop-row-id",
         tenant_id="tenant-id",
@@ -842,7 +992,7 @@ def test_workflow_trace_keeps_repeated_loop_body_nodes_under_loop(monkeypatch):
                     created_at=datetime(2026, 1, 1, 0, 0, 2 + index),
                     elapsed_time=1.0,
                     process_data="{}",
-                    execution_metadata=json.dumps({"loop_id": "loop-node"}),
+                    execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": index}),
                 ),
                 SimpleNamespace(
                     id=f"tool-row-id-{index}",
@@ -861,7 +1011,7 @@ def test_workflow_trace_keeps_repeated_loop_body_nodes_under_loop(monkeypatch):
                     created_at=datetime(2026, 1, 1, 0, 0, 3 + index),
                     elapsed_time=1.0,
                     process_data="{}",
-                    execution_metadata=json.dumps({"loop_id": "loop-node"}),
+                    execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": index}),
                 ),
                 SimpleNamespace(
                     id=f"assigner-row-id-{index}",
@@ -880,7 +1030,7 @@ def test_workflow_trace_keeps_repeated_loop_body_nodes_under_loop(monkeypatch):
                     created_at=datetime(2026, 1, 1, 0, 0, 4 + index),
                     elapsed_time=1.0,
                     process_data="{}",
-                    execution_metadata=json.dumps({"loop_id": "loop-node"}),
+                    execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": index}),
                 ),
             ]
         )
@@ -901,6 +1051,327 @@ def test_workflow_trace_keeps_repeated_loop_body_nodes_under_loop(monkeypatch):
 
     instance.workflow_trace(_make_workflow_trace_info())
 
-    body_spans = tracer.spans[3:]
+    wrapper_spans = [span for span in tracer.spans if span.name.startswith("loop[")]
+    assert [span.name for span in wrapper_spans] == ["loop[0]", "loop[1]", "loop[2]"]
+    assert {span.parent_name for span in wrapper_spans} == {"loop_main_loop"}
+
+    body_spans = [
+        span
+        for span in tracer.spans
+        if span.name
+        in {
+            "template-transform_Template",
+            "tool_Embedded_Workflow_2_tool",
+            "assigner_Variable_Assigner",
+        }
+    ]
     assert len(body_spans) == 9
-    assert {span.parent_name for span in body_spans} == {"loop_main_loop"}
+    assert {span.attributes["dify.node.execution_id"]: span.parent_name for span in body_spans} == {
+        "template-row-id-0": "loop[0]",
+        "tool-row-id-0": "loop[0]",
+        "assigner-row-id-0": "loop[0]",
+        "template-row-id-1": "loop[1]",
+        "tool-row-id-1": "loop[1]",
+        "assigner-row-id-1": "loop[1]",
+        "template-row-id-2": "loop[2]",
+        "tool-row-id-2": "loop[2]",
+        "assigner-row-id-2": "loop[2]",
+    }
+
+
+def test_workflow_trace_groups_iteration_body_nodes_by_index(monkeypatch):
+    iteration = _make_node_execution(
+        id="iteration-row-id",
+        node_execution_id="iteration-exec-id",
+        node_id="iteration-node",
+        title="Iteration",
+        node_type="iteration",
+        process_data="{}",
+    )
+    first = _make_node_execution(
+        id="if-row-id-0",
+        node_execution_id="if-exec-id-0",
+        node_id="if-node",
+        title="IF/ELSE",
+        node_type="if-else",
+        process_data="{}",
+        execution_metadata=json.dumps({"iteration_id": "iteration-node", "iteration_index": 0}),
+    )
+    second = _make_node_execution(
+        id="template-row-id-1",
+        node_execution_id="template-exec-id-1",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"iteration_id": "iteration-node", "iteration_index": 1}),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[iteration, first, second])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    assert [span.name for span in tracer.spans] == [
+        "workflow-run-123456",
+        "Root_Chat_workflow",
+        "iteration",
+        "iteration[0]",
+        "if-else_IF/ELSE_condition",
+        "iteration[1]",
+        "template-transform_Template",
+    ]
+    assert tracer.spans[3].parent_name == "iteration"
+    assert tracer.spans[4].parent_name == "iteration[0]"
+    assert tracer.spans[5].parent_name == "iteration"
+    assert tracer.spans[6].parent_name == "iteration[1]"
+    assert tracer.spans[4].attributes["dify.node.iteration_index"] == 0
+    assert tracer.spans[6].attributes["dify.node.iteration_index"] == 1
+
+
+def test_workflow_trace_exposes_loop_index_as_queryable_node_attribute(monkeypatch):
+    loop = _make_node_execution(
+        id="loop-row-id",
+        node_execution_id="loop-exec-id",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    child = _make_node_execution(
+        id="template-row-id",
+        node_execution_id="template-exec-id",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 3}),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[loop, child])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    child_span = next(span for span in tracer.spans if span.name == "template-transform_Template")
+    assert child_span.attributes["dify.node.loop_index"] == 3
+
+    wrapper = next(span for span in tracer.spans if span.name == "loop[3]")
+    wrapper_metadata = json.loads(wrapper.attributes[SpanAttributes.METADATA])
+    assert wrapper.attributes[SpanAttributes.SESSION_ID] == "workflow-run-123456"
+    assert wrapper.attributes["dify.wrapper.synthetic"] is True
+    assert wrapper.attributes["dify.wrapper.type"] == "loop"
+    assert wrapper.attributes["dify.wrapper.index"] == "3"
+    assert wrapper.attributes["dify.wrapper.container_execution_id"] == "loop-row-id"
+    assert wrapper_metadata == {
+        "synthetic": True,
+        "wrapper_type": "loop",
+        "wrapper_index": "3",
+        "container_execution_id": "loop-row-id",
+    }
+
+
+def test_workflow_trace_wrapper_uses_child_time_bounds_and_error_status(monkeypatch):
+    loop = _make_node_execution(
+        id="loop-row-id",
+        node_execution_id="loop-exec-id",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+        created_at=datetime(2026, 1, 1, 0, 0, 0),
+        elapsed_time=10.0,
+    )
+    first = _make_node_execution(
+        id="first-row-id",
+        node_execution_id="first-exec-id",
+        node_id="first-node",
+        title="First",
+        node_type="template-transform",
+        process_data="{}",
+        created_at=datetime(2026, 1, 1, 0, 0, 3),
+        elapsed_time=2.0,
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 0}),
+    )
+    second = _make_node_execution(
+        id="second-row-id",
+        node_execution_id="second-exec-id",
+        node_id="second-node",
+        title="Second",
+        node_type="template-transform",
+        status="failed",
+        error="boom",
+        process_data="{}",
+        created_at=datetime(2026, 1, 1, 0, 0, 4),
+        elapsed_time=5.0,
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 0}),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[loop, first, second])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    wrapper = next(span for span in tracer.spans if span.name == "loop[0]")
+    assert wrapper.start_time == datetime_to_nanos(first.created_at)
+    assert wrapper.end_time == datetime_to_nanos(second.created_at + timedelta(seconds=second.elapsed_time))
+    assert wrapper.status.status_code == StatusCode.ERROR
+
+
+def test_workflow_trace_keeps_loop_body_nodes_under_loop_without_index(monkeypatch):
+    loop = _make_node_execution(
+        id="loop-row-id",
+        node_execution_id="loop-exec-id",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    template = _make_node_execution(
+        id="template-row-id",
+        node_execution_id="template-exec-id",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node"}),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[loop, template])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    assert [span.name for span in tracer.spans] == [
+        "workflow-run-123456",
+        "Root_Chat_workflow",
+        "loop_main_loop",
+        "template-transform_Template",
+    ]
+    assert tracer.spans[3].parent_name == "loop_main_loop"
+
+
+def test_workflow_trace_ignores_malformed_loop_index(monkeypatch):
+    loop = _make_node_execution(
+        id="loop-row-id",
+        node_execution_id="loop-exec-id",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    template = _make_node_execution(
+        id="template-row-id",
+        node_execution_id="template-exec-id",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": " 1"}),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[loop, template])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    assert [span.name for span in tracer.spans] == [
+        "workflow-run-123456",
+        "Root_Chat_workflow",
+        "loop_main_loop",
+        "template-transform_Template",
+    ]
+    assert tracer.spans[3].parent_name == "loop_main_loop"
+
+
+def test_workflow_trace_skips_wrapper_when_container_graph_id_is_ambiguous(monkeypatch):
+    first_loop = _make_node_execution(
+        id="loop-row-id-1",
+        node_execution_id="loop-exec-id-1",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    second_loop = _make_node_execution(
+        id="loop-row-id-2",
+        node_execution_id="loop-exec-id-2",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    child = _make_node_execution(
+        id="template-row-id",
+        node_execution_id="template-exec-id",
+        node_id="template-node",
+        title="Template",
+        node_type="template-transform",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 0}),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[first_loop, second_loop, child])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+
+    instance.workflow_trace(_make_workflow_trace_info())
+
+    assert "loop[0]" not in [span.name for span in tracer.spans]
+    child_span = next(span for span in tracer.spans if span.name == "template-transform_Template")
+    assert child_span.parent_name == "Root_Chat_workflow"
+
+
+def test_workflow_trace_ends_loop_wrapper_when_child_export_raises(monkeypatch):
+    loop = _make_node_execution(
+        id="loop-row-id",
+        node_execution_id="loop-exec-id",
+        node_id="loop-node",
+        title="Loop",
+        node_type="loop",
+        process_data="{}",
+    )
+    tool = _make_node_execution(
+        id="tool-row-id",
+        node_execution_id="tool-exec-id",
+        node_id="tool-node",
+        title="Embedded Workflow",
+        node_type="tool",
+        process_data="{}",
+        execution_metadata=json.dumps({"loop_id": "loop-node", "loop_index": 0}),
+    )
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[loop, tool])
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.trace.set_span_in_context",
+        lambda span: span,
+    )
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace.TraceContextTextMapPropagator",
+        lambda: SimpleNamespace(inject=lambda carrier, context=None: carrier.update({"traceparent": "fake"})),
+    )
+
+    def raise_publish_error(node_execution, carrier):
+        raise RuntimeError("publish failed")
+
+    monkeypatch.setattr(
+        "core.ops.arize_phoenix_trace.arize_phoenix_trace._publish_parent_span_context_aliases",
+        raise_publish_error,
+    )
+
+    with pytest.raises(RuntimeError, match="publish failed"):
+        instance.workflow_trace(_make_workflow_trace_info())
+
+    wrapper_span = next(span for span in tracer.spans if span.name == "loop[0]")
+    assert wrapper_span.ended is True
+    assert wrapper_span.end_count == 1

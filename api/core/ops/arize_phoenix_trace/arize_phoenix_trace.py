@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional, Union, cast
 
@@ -45,6 +46,7 @@ _PHOENIX_PARENT_SPAN_CONTEXT_TTL_SECONDS = 300
 _TRACEPARENT_PATTERN = re.compile(
     r"^(?P<version>[0-9a-f]{2})-(?P<trace_id>[0-9a-f]{32})-(?P<span_id>[0-9a-f]{16})-(?P<flags>[0-9a-f]{2})$"
 )
+_WRAPPER_INDEX_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
 def _build_parent_span_bridge_id(parent_workflow_run_id: str, node_id: str) -> str:
@@ -269,6 +271,95 @@ def _build_execution_id_by_node_id(node_executions: list[Any]) -> dict[str, str]
             execution_id_by_node_id.pop(node_id, None)
 
     return execution_id_by_node_id
+
+
+@dataclass(frozen=True)
+class _WrapperGroupKey:
+    wrapper_type: str
+    container_execution_id: str
+    index: str
+
+
+@dataclass
+class _WrapperGroup:
+    key: _WrapperGroupKey
+    container_execution_id: str
+    child_execution_ids: set[str] = field(default_factory=set)
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    has_error: bool = False
+
+
+def _normalize_wrapper_index(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value) if value >= 0 else None
+    if isinstance(value, str) and _WRAPPER_INDEX_PATTERN.fullmatch(value):
+        return value
+    return None
+
+
+def _node_finished_at(node_execution: Any) -> datetime:
+    created_at = getattr(node_execution, "created_at", None) or datetime.now()
+    elapsed_time = getattr(node_execution, "elapsed_time", None) or 0.0
+    return created_at + timedelta(seconds=elapsed_time)
+
+
+def _resolve_wrapper_group_key(
+    node_execution: Any,
+    node_metadata: Mapping[str, Any],
+    execution_id_by_node_id: Mapping[str, str],
+) -> _WrapperGroupKey | None:
+    for wrapper_type, container_key, index_key in (
+        ("iteration", "iteration_id", "iteration_index"),
+        ("loop", "loop_id", "loop_index"),
+    ):
+        container_id = node_metadata.get(container_key) or getattr(node_execution, container_key, None)
+        if not isinstance(container_id, str) or not container_id:
+            continue
+
+        container_execution_id = execution_id_by_node_id.get(container_id)
+        if container_execution_id is None or container_execution_id == _get_node_execution_id(node_execution):
+            continue
+
+        index = _normalize_wrapper_index(node_metadata.get(index_key))
+        if index is None:
+            continue
+
+        return _WrapperGroupKey(
+            wrapper_type=wrapper_type,
+            container_execution_id=container_execution_id,
+            index=index,
+        )
+
+    return None
+
+
+def _build_wrapper_groups(node_executions: list[Any]) -> dict[_WrapperGroupKey, _WrapperGroup]:
+    execution_id_by_node_id = _build_execution_id_by_node_id(node_executions)
+    groups: dict[_WrapperGroupKey, _WrapperGroup] = {}
+
+    for node_execution in node_executions:
+        node_metadata = _extract_json_mapping(getattr(node_execution, "execution_metadata", None))
+        group_key = _resolve_wrapper_group_key(node_execution, node_metadata, execution_id_by_node_id)
+        if group_key is None:
+            continue
+
+        group = groups.setdefault(
+            group_key,
+            _WrapperGroup(key=group_key, container_execution_id=group_key.container_execution_id),
+        )
+        execution_id = _get_node_execution_id(node_execution)
+        group.child_execution_ids.add(execution_id)
+
+        created_at = getattr(node_execution, "created_at", None) or datetime.now()
+        finished_at = _node_finished_at(node_execution)
+        group.start_time = created_at if group.start_time is None else min(group.start_time, created_at)
+        group.end_time = finished_at if group.end_time is None else max(group.end_time, finished_at)
+        group.has_error = group.has_error or getattr(node_execution, "status", None) != "succeeded"
+
+    return groups
 
 
 def _resolve_structured_parent_execution_id(
@@ -572,8 +663,65 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
             node_execution_by_execution_id = {
                 _get_node_execution_id(node_execution): node_execution for node_execution in workflow_nodes
             }
+            wrapper_groups = _build_wrapper_groups(workflow_nodes)
+            wrapper_span_by_key: dict[_WrapperGroupKey, Any] = {}
+            finalized_wrapper_keys: set[_WrapperGroupKey] = set()
+            wrapper_key_by_child_execution_id: dict[str, _WrapperGroupKey] = {}
+            for group_key, group in wrapper_groups.items():
+                for child_execution_id in group.child_execution_ids:
+                    wrapper_key_by_child_execution_id[child_execution_id] = group_key
             span_by_execution_id: dict[str, Any] = {}
             emitting_execution_ids: set[str] = set()
+
+            def emit_wrapper_span(group_key: _WrapperGroupKey) -> Any | None:
+                existing_span = wrapper_span_by_key.get(group_key)
+                if existing_span is not None:
+                    return existing_span
+
+                group = wrapper_groups.get(group_key)
+                if group is None:
+                    return None
+
+                if group.container_execution_id not in span_by_execution_id:
+                    parent_node_execution = node_execution_by_execution_id.get(group.container_execution_id)
+                    if parent_node_execution is not None:
+                        emit_node_span(parent_node_execution)
+
+                container_span = span_by_execution_id.get(group.container_execution_id)
+                if container_span is None:
+                    return None
+
+                metadata = {
+                    "synthetic": True,
+                    "wrapper_type": group_key.wrapper_type,
+                    "wrapper_index": group_key.index,
+                    "container_execution_id": group.container_execution_id,
+                }
+                wrapper_span = self.tracer.start_span(
+                    name=f"{group_key.wrapper_type}[{group_key.index}]",
+                    attributes={
+                        SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+                        SpanAttributes.METADATA: json.dumps(metadata, ensure_ascii=False),
+                        SpanAttributes.SESSION_ID: session_id,
+                        "dify.wrapper.synthetic": True,
+                        "dify.wrapper.type": group_key.wrapper_type,
+                        "dify.wrapper.index": group_key.index,
+                        "dify.wrapper.container_execution_id": group.container_execution_id,
+                    },
+                    start_time=datetime_to_nanos(group.start_time),
+                    context=trace.set_span_in_context(container_span),
+                )
+                wrapper_span_by_key[group_key] = wrapper_span
+                return wrapper_span
+
+            def finalize_wrapper_spans() -> None:
+                for group_key, wrapper_span in list(wrapper_span_by_key.items()):
+                    if group_key in finalized_wrapper_keys:
+                        continue
+                    group = wrapper_groups[group_key]
+                    _set_span_status(wrapper_span, "wrapper child failed" if group.has_error else None)
+                    wrapper_span.end(end_time=datetime_to_nanos(group.end_time))
+                    finalized_wrapper_keys.add(group_key)
 
             def emit_node_span(node_execution: Any) -> Any:
                 execution_id = _get_node_execution_id(node_execution)
@@ -645,7 +793,9 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                 else:
                     span_kind = OpenInferenceSpanKindValues.CHAIN.value
 
-                node_parent_span = _resolve_node_parent_span_by_execution(
+                wrapper_group_key = wrapper_key_by_child_execution_id.get(execution_id)
+                wrapper_parent_span = emit_wrapper_span(wrapper_group_key) if wrapper_group_key else None
+                node_parent_span = wrapper_parent_span or _resolve_node_parent_span_by_execution(
                     structured_parent_execution_id=structured_parent_execution_id,
                     span_by_execution_id=span_by_execution_id,
                     workflow_span=workflow_span,
@@ -679,7 +829,9 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                                 "tenant_id": node_execution.tenant_id,
                                 "app_id": node_execution.app_id,
                                 "loop_id": node_metadata.get("loop_id"),
+                                "loop_index": node_metadata.get("loop_index"),
                                 "iteration_id": node_metadata.get("iteration_id"),
+                                "iteration_index": node_metadata.get("iteration_index"),
                             },
                         ),
                         **_build_llm_input_message_attributes(llm_prompts),
@@ -724,8 +876,11 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
                     node_span.end(end_time=datetime_to_nanos(finished_at))
                 return node_span
 
-            for node_execution in workflow_nodes:
-                emit_node_span(node_execution)
+            try:
+                for node_execution in workflow_nodes:
+                    emit_node_span(node_execution)
+            finally:
+                finalize_wrapper_spans()
         finally:
             _set_span_status(workflow_span, trace_info.error)
             workflow_span.end(end_time=datetime_to_nanos(trace_info.end_time))
