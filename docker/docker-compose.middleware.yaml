@@ -224,6 +224,27 @@ services:
       - "${EXPOSE_PHOENIX_PORT:-6006}:${PHOENIX_PORT:-6006}"
       - "${EXPOSE_PHOENIX_GRPC_PORT:-4317}:${PHOENIX_GRPC_PORT:-4317}"
 
+  # ActiveMQ Classic broker for local async workflow log publishing via STOMP.
+  activemq:
+    image: apache/activemq-classic:${ACTIVEMQ_IMAGE_TAG:-latest}
+    profiles:
+      - ""
+      - activemq
+    restart: always
+    env_file:
+      - ./middleware.env
+    volumes:
+      - ${ACTIVEMQ_HOST_VOLUME:-./volumes/activemq}:/opt/apache-activemq/data
+    ports:
+      - "${EXPOSE_ACTIVEMQ_STOMP_PORT:-61613}:61613"
+      - "${EXPOSE_ACTIVEMQ_OPENWIRE_PORT:-61616}:61616"
+      - "${EXPOSE_ACTIVEMQ_WEB_PORT:-8161}:8161"
+    healthcheck:
+      test: [ "CMD-SHELL", "bash -c '</dev/tcp/localhost/61613'" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
 networks:
   # create a network between sandbox, api and ssrf_proxy, and can not access outside.
   ssrf_proxy_network:
