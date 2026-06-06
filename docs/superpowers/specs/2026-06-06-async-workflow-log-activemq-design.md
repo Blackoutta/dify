@@ -36,6 +36,7 @@ Reasons:
 - ActiveMQ Classic and ActiveMQ Artemis commonly support STOMP.
 - A queue supports multiple Go consumer pods through competing consumers.
 - The log use case does not need JMS/OpenWire-specific features.
+- Use `stomp.py` as an optional/lazy dependency so default installations do not fail when async publishing is disabled.
 
 The ActiveMQ broker must expose a STOMP connector, commonly on port `61613`.
 
@@ -71,11 +72,66 @@ The repositories should not depend directly on ActiveMQ client APIs. They should
 ## Write Routing Rules
 
 1. If async workflow log publishing is disabled, keep the existing synchronous DB write behavior.
-2. If `triggered_from == DEBUGGING`, keep synchronous DB writes.
+2. If the workflow invocation is console debugging, keep synchronous DB writes for both workflow runs and node executions.
 3. Otherwise, publish log events to ActiveMQ.
 4. If publishing fails, log the failure and drop the log event. Do not raise the error to the workflow execution path and do not fall back to synchronous DB writes.
 
 This means Service API, WebApp, and Installed App production invocations can use asynchronous log publishing, while console debugging remains immediately queryable from the database.
+
+### Debugging Detection
+
+Workflow run and node execution repositories use different trigger enums today:
+
+- `SQLAlchemyWorkflowExecutionRepository` receives `WorkflowRunTriggeredFrom.DEBUGGING` or `WorkflowRunTriggeredFrom.APP_RUN`.
+- `SQLAlchemyWorkflowNodeExecutionRepository` receives `WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN` for full workflow runs and `WorkflowNodeExecutionTriggeredFrom.SINGLE_STEP` for single-step runs.
+
+A full console debugging run still uses `WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN` for node executions, so node execution async routing must not rely only on the node repository's `triggered_from` value.
+
+Implementation should introduce an explicit write-mode signal, for example:
+
+```python
+class WorkflowLogWriteMode(StrEnum):
+    SYNC = "sync"
+    ASYNC = "async"
+```
+
+Repository factories or app generators should derive this from `invoke_from` / workflow run trigger once, then pass it to both repositories:
+
+- `InvokeFrom.DEBUGGER` -> `WorkflowLogWriteMode.SYNC`
+- single-step debugging -> `WorkflowLogWriteMode.SYNC`
+- Service API / WebApp / Installed App with async enabled -> `WorkflowLogWriteMode.ASYNC`
+- any invocation with async disabled -> `WorkflowLogWriteMode.SYNC`
+
+This keeps debugging behavior consistent across workflow run and node execution writes.
+
+## Repository Runtime Semantics
+
+Async publishing changes persistence but must not change repository semantics used by the workflow runtime.
+
+### Read-after-write Cache
+
+`WorkflowCycleManager` saves a workflow execution at run start and later reads it from the same repository instance when the run succeeds, partially succeeds, or fails. Node executions are also saved at node start and then read by `get_by_node_execution_id()` when the node succeeds or fails.
+
+Therefore, async `save()` must still update repository in-memory cache exactly as the synchronous path does:
+
+- `SQLAlchemyWorkflowExecutionRepository.save()` must cache the `WorkflowRun` DB model after converting the domain model, even if it publishes instead of committing.
+- `SQLAlchemyWorkflowNodeExecutionRepository.save()` must cache the `WorkflowNodeExecutionModel` by `node_execution_id`, even if it publishes instead of committing.
+- `get()` and `get_by_node_execution_id()` must continue checking cache before querying DB.
+
+Within one workflow execution, repository read-after-write behavior must remain identical to the current synchronous implementation.
+
+### Running Node Lookup on Workflow Failure
+
+`WorkflowCycleManager.handle_workflow_run_failed()` calls `get_running_executions()` to find nodes that started but did not emit terminal events. In async mode, those running node rows may not exist in DB yet.
+
+`get_running_executions()` must therefore include cached running nodes in addition to DB rows:
+
+1. Read matching running node executions from `_node_execution_cache` for the workflow run.
+2. If the repository is in synchronous mode, also query DB as it does today and merge/deduplicate results by `node_execution_id` or `id`.
+3. If the repository is in async mode, cache data is the authoritative source for same-run failure completion; DB querying is optional and must not be required for correctness.
+4. Return cached running nodes so the failure handler can publish terminal `FAILED` updates for them.
+
+This keeps failure logs complete without reintroducing synchronous node-start DB writes.
 
 ## Publisher Abstraction
 
@@ -123,6 +179,7 @@ Notes:
 - `WORKFLOW_LOG_ASYNC_ENABLED=false` preserves existing behavior by default.
 - This version should accept only `activemq` as the queue provider when async publishing is enabled.
 - ActiveMQ client imports should be lazy or optional so default installations are not broken when async publishing is disabled.
+- If async publishing is enabled and the STOMP client dependency is unavailable, startup or first publisher creation should fail clearly instead of silently pretending logs are being published.
 
 ## Message Format
 
@@ -196,7 +253,7 @@ Node execution event:
 }
 ```
 
-The exact payload fields should be derived from the existing SQLAlchemy model mapping so the consumer has enough data to perform an idempotent upsert.
+The exact payload fields should be derived from the existing SQLAlchemy model mapping so the consumer has enough data to perform an idempotent upsert. JSON-like fields in the message payload should be JSON objects or arrays, not pre-serialized DB text. The consumer is responsible for serializing them into the current database column representation when writing to Dify tables.
 
 ## ActiveMQ Headers
 
@@ -237,8 +294,21 @@ Each message is consumed by one pod. The consumer must handle at-least-once deli
 - Use idempotent database upserts.
 - Acknowledge messages only after the batch database write succeeds.
 - Handle duplicate delivery.
-- Avoid stale updates overwriting newer states.
+- Avoid stale updates overwriting newer states by using `created_at`, `finished_at`, and status ordering rules.
 - Send poison messages to a dead-letter path according to the consumer project's policy.
+
+## Publisher Connection Lifecycle
+
+The ActiveMQ publisher should reuse connections instead of creating a new connection per message.
+
+Expected behavior:
+
+- Lazily create the STOMP connection on first publish.
+- Reuse the connection for subsequent publishes in the API process.
+- Apply a short publish timeout from `WORKFLOW_LOG_PUBLISH_TIMEOUT`.
+- On connection or send failure, close/reset the connection and fail-open for that message.
+- Allow a later publish to reconnect lazily.
+- Do not block workflow execution on long broker reconnect loops.
 
 ## Failure Handling
 
@@ -262,9 +332,15 @@ Recommended future metrics:
 
 - Unit-test routing decisions:
   - async disabled uses synchronous DB write.
-  - `DEBUGGING` uses synchronous DB write.
+  - workflow run debugging uses synchronous DB write.
+  - full console debugging node executions use synchronous DB write even though their node trigger is `WORKFLOW_RUN`.
+  - single-step node executions use synchronous DB write.
   - non-debugging with async enabled publishes events.
   - publisher exceptions do not propagate.
+- Unit-test repository cache semantics:
+  - workflow run async save can be read back by `get()` from the same repository instance.
+  - node execution async save can be read back by `get_by_node_execution_id()` from the same repository instance.
+  - async `get_running_executions()` returns cached running nodes for workflow failure completion.
 - Unit-test payload serialization for workflow run and node execution events.
 - Unit-test ActiveMQ publisher headers, especially `JMSXGroupID`.
 - Unit-test provider validation: async enabled with unsupported provider should fail configuration or fall back explicitly according to implementation choice.
@@ -278,4 +354,6 @@ This design is backward-compatible because async publishing is disabled by defau
 
 - Prefer lazy importing the STOMP client in the ActiveMQ publisher so installations without the optional dependency are unaffected unless async publishing is enabled.
 - Reuse existing model-to-DB mapping methods where possible to avoid duplicating field conversion logic.
+- Add an explicit write-mode constructor parameter rather than inferring node debugging from `WorkflowNodeExecutionTriggeredFrom`.
+- Keep cache updates shared between sync and async save paths to preserve workflow runtime behavior.
 - Keep the publisher interface small and dedicated to workflow logs; do not generalize it into a broad messaging framework in this version.
