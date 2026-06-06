@@ -10,6 +10,7 @@ The target is to reduce database pressure for production workflow invocations wh
 
 - Asynchronously publish workflow run and workflow node execution log writes for non-debugging workflow invocations.
 - Keep console debugging and single-step debugging synchronous.
+- Keep existing workflow tracing complete when async workflow log publishing is enabled.
 - Use ActiveMQ in this version.
 - Keep the Dify API side decoupled from ActiveMQ-specific details through a publisher abstraction.
 - Use fail-open behavior: workflow execution must continue even if log publishing fails.
@@ -25,6 +26,7 @@ The target is to reduce database pressure for production workflow invocations wh
 - Changing database schema.
 - Making console debugging asynchronous.
 - Guaranteeing exactly-once delivery.
+- Requiring the future consumer to finish database writes before tracing can run.
 
 ## Recommended Approach
 
@@ -95,7 +97,7 @@ class WorkflowLogWriteMode(StrEnum):
     ASYNC = "async"
 ```
 
-Repository factories or app generators should derive this from `invoke_from` / workflow run trigger once, then pass it to both repositories:
+Repository factories or app generators should derive this from `invoke_from` / workflow run trigger once, then pass it to both repositories. To preserve backward compatibility across existing call sites, any new repository constructor parameter for write mode must default to `WorkflowLogWriteMode.SYNC`.
 
 - `InvokeFrom.DEBUGGER` -> `WorkflowLogWriteMode.SYNC`
 - single-step debugging -> `WorkflowLogWriteMode.SYNC`
@@ -120,6 +122,19 @@ Therefore, async `save()` must still update repository in-memory cache exactly a
 
 Within one workflow execution, repository read-after-write behavior must remain identical to the current synchronous implementation.
 
+### Log Query Consistency
+
+Console debugging and single-step debugging remain synchronously persisted and immediately queryable from existing log APIs.
+
+For non-debugging invocations using async workflow log publishing, existing APIs that create a new repository and query DB directly are eventually consistent. Before the external consumer writes events to DB, these APIs may temporarily return:
+
+- no workflow run record,
+- an older workflow run status,
+- an empty or incomplete node execution list,
+- node executions without the latest terminal status.
+
+This eventual consistency applies only to log query/read APIs. It must not affect workflow execution correctness or tracing completeness.
+
 ### Running Node Lookup on Workflow Failure
 
 `WorkflowCycleManager.handle_workflow_run_failed()` calls `get_running_executions()` to find nodes that started but did not emit terminal events. In async mode, those running node rows may not exist in DB yet.
@@ -132,6 +147,25 @@ Within one workflow execution, repository read-after-write behavior must remain 
 4. Return cached running nodes so the failure handler can publish terminal `FAILED` updates for them.
 
 This keeps failure logs complete without reintroducing synchronous node-start DB writes.
+
+## Tracing Requirements
+
+Workflow tracing is a hard requirement and must continue to work when async workflow log publishing is enabled. Tracing must not depend on the future consumer having already written `workflow_runs` or `workflow_node_executions` rows to DB.
+
+Current tracing integrations can create fresh repositories and query DB by `workflow_run_id` to build node spans. That is unsafe in async mode because the trace task can run before log events are consumed. The implementation must provide a runtime snapshot path:
+
+1. At workflow completion, collect the final `WorkflowExecution` and all same-run `WorkflowNodeExecution` domain objects from the repositories' in-memory state.
+2. Pass these snapshots into the workflow trace task or into `WorkflowTraceInfo`.
+3. Trace preprocessing must build workflow-level trace data from the provided `WorkflowExecution` snapshot when present, instead of requiring a DB `WorkflowRun` row.
+4. Trace providers such as Langfuse, Langsmith, Weave, Opik, and Aliyun must prefer the provided node execution snapshots when present.
+5. DB lookups remain as fallback for synchronous/default paths, historical trace tasks, and compatibility.
+
+Required behavior:
+
+- Async log mode must produce complete workflow traces and node spans from runtime snapshots.
+- Trace generation must not wait for ActiveMQ consumer database writes.
+- Trace generation must not force workflow/node logs back to synchronous DB writes.
+- Debugging/default sync paths should keep existing DB fallback behavior.
 
 ## Publisher Abstraction
 
@@ -236,6 +270,7 @@ Node execution event:
     "node_id": "node_id",
     "node_type": "llm",
     "title": "LLM",
+    "triggered_from": "workflow-run",
     "index": 1,
     "predecessor_node_id": "start",
     "inputs": {},
@@ -294,7 +329,11 @@ Each message is consumed by one pod. The consumer must handle at-least-once deli
 - Use idempotent database upserts.
 - Acknowledge messages only after the batch database write succeeds.
 - Handle duplicate delivery.
-- Avoid stale updates overwriting newer states by using `created_at`, `finished_at`, and status ordering rules.
+- Avoid stale updates overwriting newer states with explicit ordering rules:
+  - terminal statuses must not be overwritten by `running` events.
+  - events with `finished_at = null` may fill missing fields but must not downgrade a terminal status.
+  - terminal vs terminal conflicts should prefer the event with the later `finished_at`.
+  - workflow run transitions should treat `succeeded`, `failed`, `partial-succeeded`, and `stopped` as terminal relative to `running`.
 - Send poison messages to a dead-letter path according to the consumer project's policy.
 
 ## Publisher Connection Lifecycle
@@ -303,12 +342,25 @@ The ActiveMQ publisher should reuse connections instead of creating a new connec
 
 Expected behavior:
 
+- Connection reuse is per API process. Multi-process workers maintain independent connections.
+- Publish and reconnect operations must be thread-safe if a publisher instance can be shared by multiple threads.
+- Implementations may either protect a shared process connection with a lock or use thread-local connections.
 - Lazily create the STOMP connection on first publish.
-- Reuse the connection for subsequent publishes in the API process.
+- Reuse the connection for subsequent publishes in the API process or thread, depending on the chosen thread-safety model.
 - Apply a short publish timeout from `WORKFLOW_LOG_PUBLISH_TIMEOUT`.
 - On connection or send failure, close/reset the connection and fail-open for that message.
 - Allow a later publish to reconnect lazily.
 - Do not block workflow execution on long broker reconnect loops.
+
+## Security Notes
+
+Workflow inputs, outputs, process data, and metadata can contain sensitive customer data. ActiveMQ deployment should follow minimum security requirements:
+
+- Use broker credentials; do not allow anonymous publishing in production.
+- Prefer TLS/STOMP-over-SSL when traffic crosses hosts or networks.
+- Keep the broker on a private network and do not expose it publicly.
+- Use a least-privilege broker user scoped to the workflow log queue where possible.
+- Treat queue retention, dead-letter queues, and broker backups as sensitive data stores.
 
 ## Failure Handling
 
@@ -341,7 +393,11 @@ Recommended future metrics:
   - workflow run async save can be read back by `get()` from the same repository instance.
   - node execution async save can be read back by `get_by_node_execution_id()` from the same repository instance.
   - async `get_running_executions()` returns cached running nodes for workflow failure completion.
-- Unit-test payload serialization for workflow run and node execution events.
+- Unit-test tracing snapshot behavior:
+  - async workflow trace preprocessing can build workflow trace data without a DB `WorkflowRun` row.
+  - trace providers prefer provided node execution snapshots over DB lookups.
+  - node spans are still produced when the DB has not yet been updated by the consumer.
+- Unit-test payload serialization for workflow run and node execution events, including node `triggered_from`.
 - Unit-test ActiveMQ publisher headers, especially `JMSXGroupID`.
 - Unit-test provider validation: async enabled with unsupported provider should fail configuration or fall back explicitly according to implementation choice.
 - Keep existing repository tests passing for default configuration.
@@ -354,6 +410,7 @@ This design is backward-compatible because async publishing is disabled by defau
 
 - Prefer lazy importing the STOMP client in the ActiveMQ publisher so installations without the optional dependency are unaffected unless async publishing is enabled.
 - Reuse existing model-to-DB mapping methods where possible to avoid duplicating field conversion logic.
-- Add an explicit write-mode constructor parameter rather than inferring node debugging from `WorkflowNodeExecutionTriggeredFrom`.
+- Add an explicit write-mode constructor parameter rather than inferring node debugging from `WorkflowNodeExecutionTriggeredFrom`; default it to `WorkflowLogWriteMode.SYNC` for backward compatibility.
 - Keep cache updates shared between sync and async save paths to preserve workflow runtime behavior.
+- Add repository or trace-task accessors for same-run workflow/node execution snapshots so tracing does not depend on async DB writes.
 - Keep the publisher interface small and dedicated to workflow logs; do not generalize it into a broad messaging framework in this version.
