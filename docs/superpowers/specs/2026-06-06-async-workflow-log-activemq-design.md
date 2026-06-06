@@ -152,20 +152,77 @@ This keeps failure logs complete without reintroducing synchronous node-start DB
 
 Workflow tracing is a hard requirement and must continue to work when async workflow log publishing is enabled. Tracing must not depend on the future consumer having already written `workflow_runs` or `workflow_node_executions` rows to DB.
 
-Current tracing integrations can create fresh repositories and query DB by `workflow_run_id` to build node spans. That is unsafe in async mode because the trace task can run before log events are consumed. The implementation must provide a runtime snapshot path:
+Current tracing integrations can create fresh repositories and query DB by `workflow_run_id` to build node spans. Arize/Phoenix is especially important because customer deployments rely on it, and its provider currently has a DB-row-like `_get_workflow_nodes()` path. That is unsafe in async mode because the trace task can run before log events are consumed. The implementation must provide a runtime snapshot path:
 
-1. At workflow completion, collect the final `WorkflowExecution` and all same-run `WorkflowNodeExecution` domain objects from the repositories' in-memory state.
-2. Pass these snapshots into the workflow trace task or into `WorkflowTraceInfo`.
-3. Trace preprocessing must build workflow-level trace data from the provided `WorkflowExecution` snapshot when present, instead of requiring a DB `WorkflowRun` row.
-4. Trace providers such as Langfuse, Langsmith, Weave, Opik, and Aliyun must prefer the provided node execution snapshots when present.
-5. DB lookups remain as fallback for synchronous/default paths, historical trace tasks, and compatibility.
+1. At workflow completion, pass the already-mutated final `WorkflowExecution` object directly to the trace task. Do not rely on reloading the final workflow state from repository cache before the final save updates it.
+2. Collect all same-run node execution snapshots after terminal node updates have been saved to repository cache.
+3. Pass JSON-compatible snapshots into the workflow trace task or into `WorkflowTraceInfo`.
+4. Trace preprocessing must build workflow-level trace data from the provided workflow snapshot when present, instead of requiring a DB `WorkflowRun` row.
+5. All workflow trace providers, including Langfuse, Langsmith, Weave, Opik, Aliyun, and Arize/Phoenix, must prefer the provided node execution snapshots when present.
+6. DB lookups remain as fallback for synchronous/default paths, historical trace tasks, and compatibility.
+
+Trace snapshots must be JSON-safe because `TraceTask` data is converted with `model_dump_json()`, saved to OPS storage, and later read by Celery. Snapshots must not contain SQLAlchemy models or raw domain objects. Datetimes, enums, metadata keys, and nested values must be serialized into JSON-compatible primitives before storage, and the Celery worker must be able to dispatch traces without querying DB to reconstruct these snapshots.
 
 Required behavior:
 
 - Async log mode must produce complete workflow traces and node spans from runtime snapshots.
+- Arize/Phoenix workflow tracing must continue to produce node spans without waiting for DB log persistence.
 - Trace generation must not wait for ActiveMQ consumer database writes.
 - Trace generation must not force workflow/node logs back to synchronous DB writes.
 - Debugging/default sync paths should keep existing DB fallback behavior.
+
+### Trace Snapshot DTOs
+
+Define explicit JSON-compatible DTO shapes so providers do not guess whether fields are domain-style or DB-row-style.
+
+Workflow trace snapshot should include at minimum the fields already needed to build `WorkflowTraceInfo` without a DB `WorkflowRun` row:
+
+```json
+{
+  "id": "workflow_run_id",
+  "tenant_id": "tenant_id",
+  "app_id": "app_id",
+  "workflow_id": "workflow_id",
+  "triggered_from": "app-run",
+  "type": "workflow",
+  "version": "1",
+  "graph": {},
+  "inputs": {},
+  "outputs": {},
+  "status": "succeeded",
+  "error": null,
+  "elapsed_time": 1.23,
+  "total_tokens": 100,
+  "total_steps": 3,
+  "exceptions_count": 0,
+  "created_at": "2026-06-06T00:00:00Z",
+  "finished_at": "2026-06-06T00:00:01Z"
+}
+```
+
+Node trace snapshot should include at minimum:
+
+```json
+{
+  "id": "node_execution_record_id",
+  "workflow_run_id": "workflow_run_id",
+  "node_execution_id": "node_execution_id",
+  "node_id": "node_id",
+  "node_type": "llm",
+  "title": "LLM",
+  "inputs": {},
+  "process_data": {},
+  "outputs": {},
+  "status": "succeeded",
+  "error": null,
+  "elapsed_time": 1.23,
+  "metadata": {},
+  "created_at": "2026-06-06T00:00:00Z",
+  "finished_at": "2026-06-06T00:00:01Z"
+}
+```
+
+Provider adapters that need DB-row-like names, such as Arize/Phoenix's current `execution_metadata` and `workflow_run_id` access pattern, should adapt from this DTO instead of querying DB in async mode.
 
 ## Publisher Abstraction
 
@@ -217,7 +274,7 @@ Notes:
 
 ## Message Format
 
-Use a stable envelope so the future Go consumer is not coupled to Python ORM internals.
+Use a stable envelope so the future Go consumer is not coupled to Python ORM internals. Producers should serialize naive datetimes as UTC ISO-8601 strings. Consumers should treat missing timezone information as UTC for backward compatibility.
 
 Workflow run event:
 
@@ -333,6 +390,7 @@ Each message is consumed by one pod. The consumer must handle at-least-once deli
   - terminal statuses must not be overwritten by `running` events.
   - events with `finished_at = null` may fill missing fields but must not downgrade a terminal status.
   - terminal vs terminal conflicts should prefer the event with the later `finished_at`.
+  - terminal events with the same `finished_at` must use a deterministic status precedence instead of broker delivery order. Suggested precedence, from lower to higher: `succeeded`, `partial-succeeded`, `stopped`, `failed` / `exception`.
   - workflow run transitions should treat `succeeded`, `failed`, `partial-succeeded`, and `stopped` as terminal relative to `running`.
 - Send poison messages to a dead-letter path according to the consumer project's policy.
 
@@ -361,6 +419,7 @@ Workflow inputs, outputs, process data, and metadata can contain sensitive custo
 - Keep the broker on a private network and do not expose it publicly.
 - Use a least-privilege broker user scoped to the workflow log queue where possible.
 - Treat queue retention, dead-letter queues, and broker backups as sensitive data stores.
+- Treat trace snapshots stored for Celery dispatch in OPS storage as sensitive workflow data with the same access control and retention expectations.
 
 ## Failure Handling
 
@@ -395,7 +454,9 @@ Recommended future metrics:
   - async `get_running_executions()` returns cached running nodes for workflow failure completion.
 - Unit-test tracing snapshot behavior:
   - async workflow trace preprocessing can build workflow trace data without a DB `WorkflowRun` row.
-  - trace providers prefer provided node execution snapshots over DB lookups.
+  - trace snapshots survive `model_dump_json()` and Celery-side reconstruction without SQLAlchemy/domain objects.
+  - all workflow trace providers prefer provided node execution snapshots over DB lookups.
+  - Arize/Phoenix produces workflow node spans from snapshots when DB node rows are absent.
   - node spans are still produced when the DB has not yet been updated by the consumer.
 - Unit-test payload serialization for workflow run and node execution events, including node `triggered_from`.
 - Unit-test ActiveMQ publisher headers, especially `JMSXGroupID`.
@@ -413,4 +474,5 @@ This design is backward-compatible because async publishing is disabled by defau
 - Add an explicit write-mode constructor parameter rather than inferring node debugging from `WorkflowNodeExecutionTriggeredFrom`; default it to `WorkflowLogWriteMode.SYNC` for backward compatibility.
 - Keep cache updates shared between sync and async save paths to preserve workflow runtime behavior.
 - Add repository or trace-task accessors for same-run workflow/node execution snapshots so tracing does not depend on async DB writes.
+- Keep trace snapshot DTOs JSON-compatible and provider-neutral; add provider-specific adapters where existing providers expect DB-row-like fields.
 - Keep the publisher interface small and dedicated to workflow logs; do not generalize it into a broad messaging framework in this version.
