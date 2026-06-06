@@ -4,7 +4,7 @@ import os
 import queue
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Optional, Union
 from uuid import UUID, uuid4
 
@@ -38,6 +38,17 @@ from models.account import Tenant
 from models.model import App, AppModelConfig, Conversation, Message, MessageFile, TraceAppConfig
 from models.workflow import WorkflowAppLog, WorkflowRun
 from tasks.ops_trace_task import process_trace_tasks
+
+
+def _parse_trace_datetime(value: Any) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            return None
+    return None
 
 
 def _lookup_app_and_workspace_names(app_id: str | None, tenant_id: str | None) -> tuple[str, str]:
@@ -443,6 +454,8 @@ class TraceTask:
         self.timer = timer
         self.file_base_url = os.getenv("FILES_URL", "http://127.0.0.1:5001")
         self.app_id = None
+        self.workflow_snapshot = kwargs.pop("workflow_snapshot", None)
+        self.node_execution_snapshots = kwargs.pop("node_execution_snapshots", None) or []
 
         self.kwargs = kwargs
 
@@ -488,6 +501,67 @@ class TraceTask:
     ):
         if not workflow_run_id:
             return {}
+
+        if self.workflow_snapshot:
+            workflow_run = self.workflow_snapshot
+            workflow_run_inputs = workflow_run.get("inputs") or {}
+            workflow_run_outputs = workflow_run.get("outputs") or {}
+            app_id = workflow_run.get("app_id")
+            tenant_id = workflow_run.get("tenant_id") or ""
+            try:
+                app_name, workspace_name = _lookup_app_and_workspace_names(app_id, tenant_id)
+            except Exception:
+                logging.exception("Failed to lookup app/workspace names for workflow trace")
+                app_name, workspace_name = "", ""
+            metadata = {
+                "workflow_id": workflow_run.get("workflow_id"),
+                "conversation_id": conversation_id,
+                "workflow_run_id": workflow_run.get("id"),
+                "tenant_id": tenant_id,
+                "elapsed_time": workflow_run.get("elapsed_time") or 0,
+                "status": workflow_run.get("status"),
+                "version": workflow_run.get("version"),
+                "total_tokens": workflow_run.get("total_tokens") or 0,
+                "file_list": workflow_run_inputs.get("sys.file") or [],
+                "triggered_from": workflow_run.get("triggered_from"),
+                "user_id": user_id,
+                "app_id": app_id,
+                "app_name": app_name,
+                "workspace_name": workspace_name,
+            }
+            parent_trace_context = self.kwargs.get("parent_trace_context")
+            if isinstance(parent_trace_context, ParentTraceContext):
+                metadata["parent_trace_context"] = parent_trace_context.model_dump()
+            elif isinstance(parent_trace_context, dict):
+                metadata["parent_trace_context"] = parent_trace_context
+            trace_session_id = self.kwargs.get("trace_session_id")
+            if isinstance(trace_session_id, str) and trace_session_id:
+                metadata["trace_session_id"] = trace_session_id
+            metadata.update(self.kwargs.get("metadata", {}) or {})
+
+            return WorkflowTraceInfo(
+                workflow_data=workflow_run,
+                conversation_id=conversation_id,
+                workflow_id=workflow_run.get("workflow_id") or "",
+                tenant_id=tenant_id,
+                workflow_run_id=workflow_run.get("id") or workflow_run_id,
+                workflow_run_elapsed_time=workflow_run.get("elapsed_time") or 0,
+                workflow_run_status=workflow_run.get("status") or "",
+                workflow_run_inputs=workflow_run_inputs,
+                workflow_run_outputs=workflow_run_outputs,
+                workflow_run_version=workflow_run.get("version") or "",
+                error=workflow_run.get("error") or "",
+                total_tokens=workflow_run.get("total_tokens") or 0,
+                file_list=workflow_run_inputs.get("sys.file") or [],
+                query=workflow_run_inputs.get("query") or workflow_run_inputs.get("sys.query") or "",
+                metadata=metadata,
+                workflow_app_log_id=None,
+                message_id=None,
+                start_time=_parse_trace_datetime(workflow_run.get("created_at")),
+                end_time=_parse_trace_datetime(workflow_run.get("finished_at")),
+                workflow_snapshot=workflow_run,
+                node_execution_snapshots=self.node_execution_snapshots,
+            )
 
         with Session(db.engine) as session:
             workflow_run_stmt = select(WorkflowRun).where(WorkflowRun.id == workflow_run_id)

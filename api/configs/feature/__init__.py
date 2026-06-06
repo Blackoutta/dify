@@ -513,6 +513,46 @@ class WorkflowConfig(BaseSettings):
         default=200 * 1024,
     )
 
+    WORKFLOW_LOG_ASYNC_ENABLED: bool = Field(
+        description="Whether to publish non-debugging workflow logs asynchronously through a message queue.",
+        default=False,
+    )
+
+    WORKFLOW_LOG_QUEUE_PROVIDER: str = Field(
+        description="Queue provider for async workflow logs. This version supports 'activemq'.",
+        default="activemq",
+    )
+
+    WORKFLOW_LOG_ACTIVEMQ_HOST: str = Field(
+        description="ActiveMQ STOMP host for async workflow log publishing.",
+        default="localhost",
+    )
+
+    WORKFLOW_LOG_ACTIVEMQ_PORT: PositiveInt = Field(
+        description="ActiveMQ STOMP port for async workflow log publishing.",
+        default=61613,
+    )
+
+    WORKFLOW_LOG_ACTIVEMQ_USERNAME: str | None = Field(
+        description="ActiveMQ username for async workflow log publishing.",
+        default=None,
+    )
+
+    WORKFLOW_LOG_ACTIVEMQ_PASSWORD: str | None = Field(
+        description="ActiveMQ password for async workflow log publishing.",
+        default=None,
+    )
+
+    WORKFLOW_LOG_ACTIVEMQ_DESTINATION: str = Field(
+        description="ActiveMQ queue destination for workflow log events.",
+        default="/queue/dify.workflow.logs",
+    )
+
+    WORKFLOW_LOG_PUBLISH_TIMEOUT: PositiveFloat = Field(
+        description="Maximum seconds allowed for one workflow log publish attempt.",
+        default=0.2,
+    )
+
 
 class WorkflowNodeExecutionConfig(BaseSettings):
     """

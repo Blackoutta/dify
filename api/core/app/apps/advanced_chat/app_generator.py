@@ -28,6 +28,7 @@ from core.ops.trace_context import extract_trace_session_id_from_args
 from core.prompt.utils.get_thread_messages_length import get_thread_messages_length
 from core.repositories import SQLAlchemyWorkflowNodeExecutionRepository
 from core.repositories.sqlalchemy_workflow_execution_repository import SQLAlchemyWorkflowExecutionRepository
+from core.workflow.log_publisher import WorkflowLogWriteMode, create_workflow_log_publisher
 from core.workflow.repositories.draft_variable_repository import (
     DraftVariableSaverFactory,
 )
@@ -46,6 +47,14 @@ from services.workflow_draft_variable_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _workflow_log_write_mode_for_invoke(invoke_from: InvokeFrom) -> WorkflowLogWriteMode:
+    if invoke_from == InvokeFrom.DEBUGGER:
+        return WorkflowLogWriteMode.SYNC
+    if not dify_config.WORKFLOW_LOG_ASYNC_ENABLED:
+        return WorkflowLogWriteMode.SYNC
+    return WorkflowLogWriteMode.ASYNC
 
 
 class AdvancedChatAppGenerator(MessageBasedAppGenerator):
@@ -187,11 +196,15 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
             workflow_triggered_from = WorkflowRunTriggeredFrom.DEBUGGING
         else:
             workflow_triggered_from = WorkflowRunTriggeredFrom.APP_RUN
+        workflow_log_write_mode = _workflow_log_write_mode_for_invoke(invoke_from)
+        workflow_log_publisher = create_workflow_log_publisher(dify_config)
         workflow_execution_repository = SQLAlchemyWorkflowExecutionRepository(
             session_factory=session_factory,
             user=user,
             app_id=application_generate_entity.app_config.app_id,
             triggered_from=workflow_triggered_from,
+            write_mode=workflow_log_write_mode,
+            workflow_log_publisher=workflow_log_publisher,
         )
         # Create workflow node execution repository
         workflow_node_execution_repository = SQLAlchemyWorkflowNodeExecutionRepository(
@@ -199,6 +212,8 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
             user=user,
             app_id=application_generate_entity.app_config.app_id,
             triggered_from=WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
+            write_mode=workflow_log_write_mode,
+            workflow_log_publisher=workflow_log_publisher,
         )
 
         return self._generate(

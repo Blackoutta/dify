@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from core.repositories.sqlalchemy_workflow_execution_repository import SQLAlchemyWorkflowExecutionRepository
 from core.workflow.entities.workflow_execution import WorkflowExecution, WorkflowExecutionStatus, WorkflowType
+from core.workflow.log_publisher.entities import WorkflowLogEventType, WorkflowLogWriteMode
 from models.account import Account, Tenant
 from models.enums import WorkflowRunTriggeredFrom
 
@@ -107,3 +108,34 @@ def test_save_logs_error_for_db_exception(mock_user, workflow_execution, caplog)
     assert session_factory.call_count == 1
     assert "Workflow execution persistence error" in caplog.text
     assert "test-workflow-run-id" in caplog.text
+
+
+def test_async_save_publishes_workflow_run_and_updates_cache(mock_user, workflow_execution):
+    session_factory = MagicMock(spec=sessionmaker)
+    publisher = MagicMock()
+    repository = _repository(session_factory, mock_user)
+    repository._write_mode = WorkflowLogWriteMode.ASYNC
+    repository._workflow_log_publisher = publisher
+
+    repository.save(workflow_execution)
+
+    publisher.publish.assert_called_once()
+    event = publisher.publish.call_args.args[0]
+    assert event.event_type == WorkflowLogEventType.WORKFLOW_RUN_UPSERT
+    assert event.payload["id"] == workflow_execution.id_
+    assert repository.get(workflow_execution.id_).id_ == workflow_execution.id_
+    session_factory.assert_not_called()
+
+
+def test_async_save_fail_open_still_updates_cache(mock_user, workflow_execution):
+    session_factory = MagicMock(spec=sessionmaker)
+    publisher = MagicMock()
+    publisher.publish.side_effect = RuntimeError("broker down")
+    repository = _repository(session_factory, mock_user)
+    repository._write_mode = WorkflowLogWriteMode.ASYNC
+    repository._workflow_log_publisher = publisher
+
+    repository.save(workflow_execution)
+
+    assert repository.get(workflow_execution.id_).id_ == workflow_execution.id_
+    session_factory.assert_not_called()

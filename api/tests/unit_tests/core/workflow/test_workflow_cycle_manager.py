@@ -266,6 +266,55 @@ def test_handle_workflow_run_success_adds_trace_session_id_to_trace_task(
     assert trace_task.kwargs["trace_session_id"] == "external-session"
 
 
+def test_workflow_success_trace_task_receives_json_safe_snapshots(
+    workflow_cycle_manager, mock_workflow_execution_repository, mock_node_execution_repository
+):
+    workflow_execution = WorkflowExecution(
+        id_="test-workflow-run-id",
+        workflow_id="test-workflow-id",
+        workflow_version="1.0",
+        workflow_type=WorkflowType.CHAT,
+        graph={"nodes": [], "edges": []},
+        inputs={"query": "test query"},
+        started_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    node_execution = WorkflowNodeExecution(
+        id="record-1",
+        node_execution_id="node-exec-1",
+        workflow_id="test-workflow-id",
+        workflow_execution_id="test-workflow-run-id",
+        index=1,
+        predecessor_node_id="start",
+        node_id="llm",
+        node_type=NodeType.LLM,
+        title="LLM",
+        status=WorkflowNodeExecutionStatus.SUCCEEDED,
+        created_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    mock_workflow_execution_repository.get.return_value = workflow_execution
+    mock_workflow_execution_repository.to_trace_snapshot.return_value = {
+        "id": "test-workflow-run-id",
+        "status": "succeeded",
+    }
+    mock_node_execution_repository.get_cached_executions_by_workflow_run.return_value = [node_execution]
+    mock_node_execution_repository.to_trace_snapshot.return_value = {"node_execution_id": "node-exec-1"}
+    trace_manager = MagicMock()
+    trace_manager.user_id = "test-user-id"
+
+    workflow_cycle_manager.handle_workflow_run_success(
+        workflow_run_id="test-workflow-run-id",
+        total_tokens=10,
+        total_steps=1,
+        outputs={"answer": "world"},
+        trace_manager=trace_manager,
+    )
+
+    trace_task = trace_manager.add_trace_task.call_args.args[0]
+    assert trace_task.workflow_snapshot["id"] == "test-workflow-run-id"
+    assert trace_task.workflow_snapshot["status"] == "succeeded"
+    assert trace_task.node_execution_snapshots[0]["node_execution_id"] == "node-exec-1"
+
+
 def test_handle_workflow_run_failed(workflow_cycle_manager, mock_workflow_execution_repository):
     """Test handle_workflow_run_failed method"""
     # Create a real WorkflowExecution

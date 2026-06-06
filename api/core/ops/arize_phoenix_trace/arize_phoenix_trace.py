@@ -35,6 +35,7 @@ from core.ops.entities.trace_entity import (
 )
 from core.ops.exceptions import PendingTraceParentContextError
 from core.ops.trace_context import parent_trace_context_from_metadata
+from core.ops.workflow_trace_snapshots import workflow_node_snapshot_to_domain_like
 from extensions.ext_database import db
 from extensions.ext_redis import redis_client
 from models.model import App, EndUser, MessageFile
@@ -674,7 +675,12 @@ class ArizePhoenixDataTrace(BaseTraceInstance):
 
         try:
             # Process workflow nodes
-            workflow_nodes = list(self._get_workflow_nodes(trace_info.workflow_run_id))
+            if trace_info.node_execution_snapshots:
+                workflow_nodes = [
+                    workflow_node_snapshot_to_domain_like(snapshot) for snapshot in trace_info.node_execution_snapshots
+                ]
+            else:
+                workflow_nodes = list(self._get_workflow_nodes(trace_info.workflow_run_id))
             execution_id_by_node_id = _build_execution_id_by_node_id(workflow_nodes)
             node_execution_by_execution_id = {
                 _get_node_execution_id(node_execution): node_execution for node_execution in workflow_nodes

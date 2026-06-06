@@ -135,6 +135,40 @@ def _make_workflow_trace_info(**overrides):
     return WorkflowTraceInfo(**values)
 
 
+def test_phoenix_workflow_trace_uses_node_snapshots_when_db_empty(monkeypatch):
+    instance, tracer = _make_trace_instance(monkeypatch, nodes=[])
+    trace_info = _make_workflow_trace_info(
+        node_execution_snapshots=[
+            {
+                "id": "record-1",
+                "workflow_run_id": "workflow-run-123456",
+                "node_execution_id": "node-exec-1",
+                "node_id": "llm-node",
+                "node_type": "llm",
+                "title": "LLM",
+                "inputs": {"query": "hello"},
+                "process_data": {
+                    "prompts": [],
+                    "model_mode": "chat",
+                    "model_provider": "openai",
+                    "model_name": "gpt-4",
+                },
+                "outputs": {"text": "world"},
+                "status": "succeeded",
+                "error": None,
+                "elapsed_time": 1.0,
+                "metadata": {"total_tokens": 10},
+                "created_at": "2026-06-06T01:02:03Z",
+                "finished_at": "2026-06-06T01:02:04Z",
+            }
+        ]
+    )
+
+    instance.workflow_trace(trace_info)
+
+    assert any(span.name == "llm_gpt_4" for span in tracer.spans)
+
+
 def _make_node_execution(**overrides):
     values = {
         "id": "node-exec-1",
