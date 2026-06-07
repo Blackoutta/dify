@@ -16,13 +16,6 @@ from core.workflow.entities.workflow_execution import (
     WorkflowExecutionStatus,
     WorkflowType,
 )
-from core.workflow.log_publisher.entities import (
-    WorkflowLogEvent,
-    WorkflowLogEventType,
-    WorkflowLogWriteMode,
-    WorkflowRunTraceSnapshot,
-)
-from core.workflow.log_publisher.publisher import NoopWorkflowLogPublisher, WorkflowLogPublisher
 from core.workflow.repositories.workflow_execution_repository import WorkflowExecutionRepository
 from core.workflow.workflow_type_encoder import WorkflowRuntimeTypeConverter
 from libs.helper import extract_tenant_id
@@ -55,8 +48,6 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
         user: Union[Account, EndUser],
         app_id: Optional[str],
         triggered_from: Optional[WorkflowRunTriggeredFrom],
-        write_mode: WorkflowLogWriteMode = WorkflowLogWriteMode.SYNC,
-        workflow_log_publisher: WorkflowLogPublisher | None = None,
     ):
         """
         Initialize the repository with a SQLAlchemy sessionmaker or engine and context information.
@@ -93,8 +84,6 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
         # Determine user role based on user type
         self._creator_user_role = CreatorUserRole.ACCOUNT if isinstance(user, Account) else CreatorUserRole.END_USER
 
-        self._write_mode = write_mode
-        self._workflow_log_publisher = workflow_log_publisher or NoopWorkflowLogPublisher()
 
         # Initialize in-memory cache for workflow executions
         # Key: execution_id, Value: WorkflowRun (DB model)
@@ -190,33 +179,6 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
 
         return db_model
 
-    def _workflow_run_payload(self, db_model: WorkflowRun) -> dict:
-        return {
-            "id": db_model.id,
-            "tenant_id": db_model.tenant_id,
-            "app_id": db_model.app_id,
-            "workflow_id": db_model.workflow_id,
-            "triggered_from": db_model.triggered_from,
-            "type": db_model.type,
-            "version": db_model.version,
-            "graph": db_model.graph_dict,
-            "inputs": db_model.inputs_dict,
-            "outputs": db_model.outputs_dict,
-            "status": db_model.status,
-            "error": db_model.error,
-            "elapsed_time": db_model.elapsed_time,
-            "total_tokens": db_model.total_tokens,
-            "total_steps": db_model.total_steps,
-            "exceptions_count": db_model.exceptions_count,
-            "created_by_role": db_model.created_by_role,
-            "created_by": db_model.created_by,
-            "created_at": db_model.created_at,
-            "finished_at": db_model.finished_at,
-        }
-
-    def to_trace_snapshot(self, execution: WorkflowExecution) -> dict:
-        db_model = self._to_db_model(execution)
-        return WorkflowRunTraceSnapshot(**self._workflow_run_payload(db_model)).model_dump(mode="json")
 
     def save(self, execution: WorkflowExecution) -> None:
         """
@@ -237,23 +199,6 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
         # Convert domain model to database model using tenant context and other attributes
         db_model = self._to_db_model(execution)
 
-        if self._write_mode == WorkflowLogWriteMode.ASYNC:
-            try:
-                self._workflow_log_publisher.publish(
-                    WorkflowLogEvent.create(
-                        event_type=WorkflowLogEventType.WORKFLOW_RUN_UPSERT,
-                        payload=self._workflow_run_payload(db_model),
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to publish workflow run log event",
-                    exc_info=True,
-                    extra={"workflow_run_id": db_model.id},
-                )
-            logger.debug(f"Updating cache for execution_id: {db_model.id}")
-            self._execution_cache[db_model.id] = db_model
-            return
 
         def operation(session):
             session.merge(db_model)

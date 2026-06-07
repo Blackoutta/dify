@@ -105,7 +105,7 @@ class WorkflowCycleManager:
         workflow_execution.finished_at = datetime.now(UTC).replace(tzinfo=None)
 
         if trace_manager:
-            workflow_snapshot, node_execution_snapshots = self._workflow_trace_snapshots(workflow_execution)
+            node_execution_snapshots = self._node_trace_snapshots(workflow_execution.id_)
             trace_manager.add_trace_task(
                 TraceTask(
                     TraceTaskName.WORKFLOW_TRACE,
@@ -114,7 +114,6 @@ class WorkflowCycleManager:
                     user_id=trace_manager.user_id,
                     parent_trace_context=parent_trace_context,
                     trace_session_id=trace_session_id,
-                    workflow_snapshot=workflow_snapshot,
                     node_execution_snapshots=node_execution_snapshots,
                 )
             )
@@ -146,7 +145,7 @@ class WorkflowCycleManager:
         execution.exceptions_count = exceptions_count
 
         if trace_manager:
-            workflow_snapshot, node_execution_snapshots = self._workflow_trace_snapshots(execution)
+            node_execution_snapshots = self._node_trace_snapshots(execution.id_)
             trace_manager.add_trace_task(
                 TraceTask(
                     TraceTaskName.WORKFLOW_TRACE,
@@ -155,7 +154,6 @@ class WorkflowCycleManager:
                     user_id=trace_manager.user_id,
                     parent_trace_context=parent_trace_context,
                     trace_session_id=trace_session_id,
-                    workflow_snapshot=workflow_snapshot,
                     node_execution_snapshots=node_execution_snapshots,
                 )
             )
@@ -205,7 +203,7 @@ class WorkflowCycleManager:
                 self._workflow_node_execution_repository.save(node_execution)
 
         if trace_manager:
-            workflow_snapshot, node_execution_snapshots = self._workflow_trace_snapshots(workflow_execution)
+            node_execution_snapshots = self._node_trace_snapshots(workflow_execution.id_)
             trace_manager.add_trace_task(
                 TraceTask(
                     TraceTaskName.WORKFLOW_TRACE,
@@ -214,7 +212,6 @@ class WorkflowCycleManager:
                     user_id=trace_manager.user_id,
                     parent_trace_context=parent_trace_context,
                     trace_session_id=trace_session_id,
-                    workflow_snapshot=workflow_snapshot,
                     node_execution_snapshots=node_execution_snapshots,
                 )
             )
@@ -222,16 +219,15 @@ class WorkflowCycleManager:
         self._workflow_execution_repository.save(workflow_execution)
         return workflow_execution
 
-    def _workflow_trace_snapshots(self, workflow_execution: WorkflowExecution) -> tuple[dict | None, list[dict]]:
-        workflow_snapshot = self._workflow_execution_repository.to_trace_snapshot(workflow_execution)
+    def _node_trace_snapshots(self, workflow_execution_id: str) -> list[dict]:
+        if not hasattr(self._workflow_node_execution_repository, "get_cached_executions_by_workflow_run"):
+            return []
+        if not hasattr(self._workflow_node_execution_repository, "to_trace_snapshot"):
+            return []
         node_executions = self._workflow_node_execution_repository.get_cached_executions_by_workflow_run(
-            workflow_execution.id_
+            workflow_execution_id
         )
-        node_snapshots = [
-            self._workflow_node_execution_repository.to_trace_snapshot(node_execution)
-            for node_execution in node_executions
-        ]
-        return workflow_snapshot, node_snapshots
+        return [self._workflow_node_execution_repository.to_trace_snapshot(node) for node in node_executions]
 
     def handle_node_execution_start(
         self,

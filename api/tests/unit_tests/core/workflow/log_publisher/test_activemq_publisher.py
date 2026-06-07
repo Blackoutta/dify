@@ -74,8 +74,8 @@ def test_activemq_publisher_resets_connection_on_send_failure(monkeypatch):
         timeout=0.2,
     )
     event = WorkflowLogEvent.create(
-        event_type=WorkflowLogEventType.WORKFLOW_RUN_UPSERT,
-        payload={"id": "run-1"},
+        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+        payload={"workflow_run_id": "run-1", "id": "node-1"},
     )
 
     try:

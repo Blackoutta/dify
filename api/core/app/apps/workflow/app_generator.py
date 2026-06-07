@@ -41,7 +41,7 @@ from services.workflow_draft_variable_service import DraftVarLoader, WorkflowDra
 logger = logging.getLogger(__name__)
 
 
-def _workflow_log_write_mode_for_invoke(invoke_from: InvokeFrom) -> WorkflowLogWriteMode:
+def _workflow_node_log_write_mode_for_invoke(invoke_from: InvokeFrom) -> WorkflowLogWriteMode:
     if invoke_from == InvokeFrom.DEBUGGER:
         return WorkflowLogWriteMode.SYNC
     if not dify_config.WORKFLOW_LOG_ASYNC_ENABLED:
@@ -171,23 +171,21 @@ class WorkflowAppGenerator(BaseAppGenerator):
             workflow_triggered_from = WorkflowRunTriggeredFrom.DEBUGGING
         else:
             workflow_triggered_from = WorkflowRunTriggeredFrom.APP_RUN
-        workflow_log_write_mode = _workflow_log_write_mode_for_invoke(invoke_from)
-        workflow_log_publisher = create_workflow_log_publisher(dify_config)
         workflow_execution_repository = SQLAlchemyWorkflowExecutionRepository(
             session_factory=session_factory,
             user=user,
             app_id=application_generate_entity.app_config.app_id,
             triggered_from=workflow_triggered_from,
-            write_mode=workflow_log_write_mode,
-            workflow_log_publisher=workflow_log_publisher,
         )
         # Create workflow node execution repository
+        workflow_node_log_write_mode = _workflow_node_log_write_mode_for_invoke(invoke_from)
+        workflow_log_publisher = create_workflow_log_publisher(dify_config)
         workflow_node_execution_repository = SQLAlchemyWorkflowNodeExecutionRepository(
             session_factory=session_factory,
             user=user,
             app_id=application_generate_entity.app_config.app_id,
             triggered_from=WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
-            write_mode=workflow_log_write_mode,
+            write_mode=workflow_node_log_write_mode,
             workflow_log_publisher=workflow_log_publisher,
         )
 

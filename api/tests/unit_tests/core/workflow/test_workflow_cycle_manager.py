@@ -292,10 +292,6 @@ def test_workflow_success_trace_task_receives_json_safe_snapshots(
         created_at=datetime.now(UTC).replace(tzinfo=None),
     )
     mock_workflow_execution_repository.get.return_value = workflow_execution
-    mock_workflow_execution_repository.to_trace_snapshot.return_value = {
-        "id": "test-workflow-run-id",
-        "status": "succeeded",
-    }
     mock_node_execution_repository.get_cached_executions_by_workflow_run.return_value = [node_execution]
     mock_node_execution_repository.to_trace_snapshot.return_value = {"node_execution_id": "node-exec-1"}
     trace_manager = MagicMock()
@@ -310,8 +306,6 @@ def test_workflow_success_trace_task_receives_json_safe_snapshots(
     )
 
     trace_task = trace_manager.add_trace_task.call_args.args[0]
-    assert trace_task.workflow_snapshot["id"] == "test-workflow-run-id"
-    assert trace_task.workflow_snapshot["status"] == "succeeded"
     assert trace_task.node_execution_snapshots[0]["node_execution_id"] == "node-exec-1"
 
 

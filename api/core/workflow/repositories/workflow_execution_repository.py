@@ -40,7 +40,3 @@ class WorkflowExecutionRepository(Protocol):
             The WorkflowExecution instance if found, None otherwise
         """
         ...
-
-    def to_trace_snapshot(self, execution: WorkflowExecution) -> dict:
-        """Return a JSON-compatible workflow trace snapshot for the execution."""
-        ...

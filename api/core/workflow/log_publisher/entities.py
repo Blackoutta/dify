@@ -15,7 +15,6 @@ class WorkflowLogWriteMode(StrEnum):
 
 
 class WorkflowLogEventType(StrEnum):
-    WORKFLOW_RUN_UPSERT = "workflow_run.upsert"
     WORKFLOW_NODE_EXECUTION_UPSERT = "workflow_node_execution.upsert"
 
 
@@ -38,30 +37,6 @@ def dump_json_safe(value: Any) -> Any:
         return [dump_json_safe(item) for item in value]
     return value
 
-
-class WorkflowRunTraceSnapshot(BaseModel):
-    id: str
-    tenant_id: str
-    app_id: str | None = None
-    workflow_id: str
-    triggered_from: str
-    type: str
-    version: str
-    graph: dict[str, Any] | None = None
-    inputs: dict[str, Any] | None = None
-    outputs: dict[str, Any] | None = None
-    status: str
-    error: str | None = None
-    elapsed_time: int | float
-    total_tokens: int
-    total_steps: int
-    exceptions_count: int
-    created_at: datetime
-    finished_at: datetime | None = None
-
-    @field_serializer("created_at", "finished_at")
-    def serialize_datetime_fields(self, value: datetime | None) -> str | None:
-        return _serialize_datetime(value) if value else None
 
 
 class NodeExecutionTraceSnapshot(BaseModel):
