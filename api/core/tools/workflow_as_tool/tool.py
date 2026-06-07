@@ -4,7 +4,9 @@ from collections.abc import Generator
 from typing import Any, Optional, cast
 
 from flask_login import current_user
+from sqlalchemy import select
 
+from core.db.session_factory import session_factory
 from core.file import FILE_MODEL_IDENTITY, File, FileTransferMethod
 from core.ops.trace_context import ParentTraceContext, extract_parent_trace_context_from_args
 from core.tools.__base.tool import Tool
@@ -16,7 +18,6 @@ from core.tools.entities.tool_entities import (
     ToolProviderType,
 )
 from core.tools.errors import ToolInvokeError
-from extensions.ext_database import db
 from factories.file_factory import build_from_mapping
 from models.account import Account
 from models.model import App, EndUser
@@ -172,30 +173,36 @@ class WorkflowTool(Tool):
         """
         get the workflow by app id and version
         """
-        if not version:
-            workflow = (
-                db.session.query(Workflow)
-                .filter(Workflow.app_id == app_id, Workflow.version != "draft")
-                .order_by(Workflow.created_at.desc())
-                .first()
-            )
-        else:
-            workflow = db.session.query(Workflow).filter(Workflow.app_id == app_id, Workflow.version == version).first()
+        with session_factory.create_session() as session, session.begin():
+            if not version:
+                workflow = (
+                    session.query(Workflow)
+                    .filter(Workflow.app_id == app_id, Workflow.version != "draft")
+                    .order_by(Workflow.created_at.desc())
+                    .first()
+                )
+            else:
+                stmt = select(Workflow).where(Workflow.app_id == app_id, Workflow.version == version)
+                workflow = session.scalar(stmt)
 
-        if not workflow:
-            raise ValueError("workflow not found or not published")
+            if not workflow:
+                raise ValueError("workflow not found or not published")
 
-        return workflow
+            session.expunge(workflow)
+            return workflow
 
     def _get_app(self, app_id: str) -> App:
         """
         get the app by app id
         """
-        app = db.session.query(App).filter(App.id == app_id).first()
-        if not app:
-            raise ValueError("app not found")
+        stmt = select(App).where(App.id == app_id)
+        with session_factory.create_session() as session, session.begin():
+            app = session.scalar(stmt)
+            if not app:
+                raise ValueError("app not found")
 
-        return app
+            session.expunge(app)
+            return app
 
     def _transform_args(self, tool_parameters: dict) -> tuple[dict, list[dict]]:
         """
