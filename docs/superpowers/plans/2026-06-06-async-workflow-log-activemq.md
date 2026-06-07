@@ -1661,6 +1661,8 @@ Only run the `git add` and `git commit` commands when verification produced actu
 
 **Status:** Documented after load-test investigation. This is not an ActiveMQ producer/consumer bug, but it appears after ActiveMQ optimizations increase request throughput.
 
+**Dedicated implementation plan:** `docs/superpowers/plans/2026-06-07-nested-workflow-tool-db-session-lifetime.md`
+
 **Observed failure:** Nested workflow pressure tests can hit SQLAlchemy pool exhaustion:
 
 ```text
