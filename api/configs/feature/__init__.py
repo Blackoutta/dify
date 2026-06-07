@@ -553,6 +553,11 @@ class WorkflowConfig(BaseSettings):
         default=0.2,
     )
 
+    WORKFLOW_LOG_PUBLISH_MAX_RETRIES: NonNegativeInt = Field(
+        description="Number of retries after the initial ActiveMQ workflow node execution log publish attempt fails.",
+        default=1,
+    )
+
 
 class WorkflowNodeExecutionConfig(BaseSettings):
     """
