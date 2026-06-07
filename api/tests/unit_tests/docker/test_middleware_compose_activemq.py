@@ -17,6 +17,12 @@ def test_middleware_compose_includes_activemq_stomp_service():
     assert "${EXPOSE_ACTIVEMQ_STOMP_PORT:-61613}:61613" in activemq["ports"]
     assert "${EXPOSE_ACTIVEMQ_WEB_PORT:-8161}:8161" in activemq["ports"]
     assert "${ACTIVEMQ_HOST_VOLUME:-./volumes/activemq}:/opt/apache-activemq/data" in activemq["volumes"]
+    command = activemq["command"]
+    assert "transport.defaultHeartBeat=${ACTIVEMQ_STOMP_DEFAULT_HEARTBEAT:-30000,30000}" in command
+    assert (
+        "transport.hbGracePeriodMultiplier=${ACTIVEMQ_STOMP_HB_GRACE_PERIOD_MULTIPLIER:-2.0}" in command
+    )
+    assert "exec /opt/apache-activemq/bin/activemq console" in command
     assert activemq["healthcheck"]["test"] == ["CMD-SHELL", "bash -c '</dev/tcp/localhost/61613'"]
 
 
@@ -25,6 +31,8 @@ def test_middleware_env_example_documents_activemq_defaults():
 
     assert "ACTIVEMQ_IMAGE_TAG=latest" in env_example
     assert "ACTIVEMQ_HOST_VOLUME=./volumes/activemq" in env_example
+    assert "ACTIVEMQ_STOMP_DEFAULT_HEARTBEAT=30000,30000" in env_example
+    assert "ACTIVEMQ_STOMP_HB_GRACE_PERIOD_MULTIPLIER=2.0" in env_example
     assert "EXPOSE_ACTIVEMQ_STOMP_PORT=61613" in env_example
     assert "EXPOSE_ACTIVEMQ_WEB_PORT=8161" in env_example
     assert "EXPOSE_ACTIVEMQ_OPENWIRE_PORT=61616" in env_example
