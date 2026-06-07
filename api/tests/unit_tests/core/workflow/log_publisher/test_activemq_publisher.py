@@ -196,6 +196,29 @@ def test_activemq_publisher_exhausts_retries_and_clears_connection(monkeypatch):
     assert publisher._connection is None
 
 
+def test_activemq_publisher_warm_up_establishes_connection(monkeypatch):
+    fake_module = MagicMock()
+    fake_module.Connection = FakeConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username="user",
+        password="pass",
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+    )
+
+    publisher.warm_up()
+
+    connection = publisher._connection
+    assert connection.hosts == [("mq.local", 61613)]
+    assert connection.username == "user"
+    assert connection.connected is True
+
+
 def test_activemq_publisher_logs_slow_publish_timing(monkeypatch, caplog):
     fake_module = MagicMock()
     fake_module.Connection = FakeConnection

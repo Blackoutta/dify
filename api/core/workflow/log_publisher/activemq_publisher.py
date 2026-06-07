@@ -71,6 +71,10 @@ class ActiveMQWorkflowLogPublisher:
                 success=success,
             )
 
+    def warm_up(self) -> None:
+        with self._lock:
+            self._ensure_connection()
+
     def close(self) -> None:
         with self._lock:
             self._reset_connection()
