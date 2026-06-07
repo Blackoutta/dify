@@ -4,7 +4,7 @@
 
 **Goal:** Publish non-debugging workflow node execution logs to ActiveMQ asynchronously while keeping `workflow_runs` synchronous, preserving debugging sync writes, runtime repository semantics, and complete tracing.
 
-**Architecture:** Keep `SQLAlchemyWorkflowExecutionRepository` synchronous for all invocation types. Add a workflow-node-log publisher abstraction with an ActiveMQ STOMP implementation and explicit node `WorkflowLogWriteMode`; only `SQLAlchemyWorkflowNodeExecutionRepository` switches between sync DB persistence and async node-event publication. The ActiveMQ publisher is a process-level singleton with one reusable STOMP connection per API worker, bounded reconnect retry, and shutdown cleanup; it does not use a connection pool in this version. Tracing receives JSON-safe node execution runtime snapshots so all providers, including Arize/Phoenix, do not depend on async node DB persistence.
+**Architecture:** Keep `SQLAlchemyWorkflowExecutionRepository` synchronous for all invocation types. Add a workflow-node-log publisher abstraction with an ActiveMQ STOMP implementation and explicit node `WorkflowLogWriteMode`; only `SQLAlchemyWorkflowNodeExecutionRepository` switches between sync DB persistence and async node-event publication. The ActiveMQ publisher is a process-level singleton with a small configurable STOMP connection pool per API worker, bounded reconnect retry, startup warm-up, and shutdown cleanup. Tracing receives JSON-safe node execution runtime snapshots so all providers, including Arize/Phoenix, do not depend on async node DB persistence.
 
 **Tech Stack:** Python, SQLAlchemy, Pydantic, Flask/Celery, ActiveMQ STOMP via optional `stomp.py`, pytest, unittest.mock.
 
@@ -20,8 +20,8 @@ Create:
 - `api/core/workflow/log_publisher/__init__.py` — exports node publisher types and factory.
 - `api/core/workflow/log_publisher/entities.py` — JSON-safe node event envelope, node write mode enum, payload helpers, trace snapshot DTOs.
 - `api/core/workflow/log_publisher/publisher.py` — `WorkflowLogPublisher` protocol and no-op implementation.
-- `api/core/workflow/log_publisher/activemq_publisher.py` — thread-safe lazy STOMP publisher with bounded reconnect retry and close support.
-- `api/core/workflow/log_publisher/factory.py` — config-driven process-level singleton publisher creation keyed by ActiveMQ configuration.
+- `api/core/workflow/log_publisher/activemq_publisher.py` — thread-safe STOMP publisher with startup warm-up, configurable per-worker connection pool, bounded reconnect retry, and close support.
+- `api/core/workflow/log_publisher/factory.py` — config-driven process-level singleton publisher creation keyed by ActiveMQ configuration including pool size.
 - `api/core/ops/workflow_trace_snapshots.py` — provider-neutral adapters from JSON node snapshots to provider-friendly objects.
 - `api/tests/unit_tests/core/workflow/log_publisher/test_entities.py`
 - `api/tests/unit_tests/core/workflow/log_publisher/test_activemq_publisher.py`
@@ -1182,7 +1182,7 @@ Expected: lock updates only if dependency changed.
 - Modify: `api/tests/unit_tests/core/workflow/log_publisher/test_activemq_publisher.py`
 - Modify: `api/tests/unit_tests/core/workflow/log_publisher/test_factory.py`
 
-**Purpose:** Fix the observed second-pressure-round message loss caused by per-run publisher allocation and weak stale connection recovery. This task intentionally does **not** add an ActiveMQ connection pool. It uses one process-level publisher per API worker, one reusable STOMP connection per publisher, bounded retry, and explicit close.
+**Purpose:** Fix the observed second-pressure-round message loss caused by per-run publisher allocation and weak stale connection recovery. Start with one process-level publisher per API worker, bounded retry, startup warm-up, and explicit close; later high-concurrency testing extended this publisher with a configurable per-worker STOMP connection pool.
 
 - [ ] **Step 1: Write failing retry and close tests**
 
@@ -1657,11 +1657,79 @@ Only run the `git add` and `git commit` commands when verification produced actu
 
 ---
 
+## Follow-up Task: Fix Nested Workflow-as-Tool DB Session Lifetime
+
+**Status:** Documented after load-test investigation. This is not an ActiveMQ producer/consumer bug, but it appears after ActiveMQ optimizations increase request throughput.
+
+**Observed failure:** Nested workflow pressure tests can hit SQLAlchemy pool exhaustion:
+
+```text
+sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 overflow 0 reached, connection timed out, timeout 30.00
+```
+
+**Live DB evidence:** During the failing nested workflow run, PostgreSQL showed many `idle in transaction` connections:
+
+```text
+state                | count
+---------------------+------
+idle in transaction  | 52
+idle                 | 12
+active               | 6
+```
+
+The dominant last query was from workflow-as-tool provider lookup:
+
+```text
+idle in transaction | SELECT tool_workflow_providers... | 32
+```
+
+Other observed `idle in transaction` queries included `SELECT apps...`, `SELECT workflows...`, `SELECT accounts...`, and `SELECT workflow_runs...`, but `tool_workflow_providers` was the main cluster.
+
+**Likely path:**
+
+```text
+api/core/workflow/nodes/tool/tool_node.py
+  -> ToolManager.get_workflow_tool_runtime(...)
+     -> db.session.query(WorkflowToolProvider) ...
+     -> WorkflowToolProviderController.from_db(...)
+     -> WorkflowToolProviderController._get_db_provider_tool(...)
+  -> ToolEngine.generic_invoke(...)
+     -> WorkflowTool._invoke(...)
+        -> WorkflowTool._get_app(...)
+        -> WorkflowTool._get_workflow(...)
+        -> child WorkflowAppGenerator.generate(...)
+```
+
+**Files to investigate and likely modify:**
+
+- `api/core/tools/tool_manager.py`
+- `api/core/tools/workflow_as_tool/provider.py`
+- `api/core/tools/workflow_as_tool/tool.py`
+- Tests under `api/tests/unit_tests/core/tools/` or `api/tests/unit_tests/core/workflow/nodes/tool/`
+
+**Design direction:** End read-only DB transactions before invoking the child workflow. Prefer explicit short-lived SQLAlchemy sessions:
+
+```python
+from sqlalchemy.orm import Session
+from extensions.ext_database import db
+
+with Session(db.engine, expire_on_commit=False) as session:
+    row = session.query(...).filter(...).first()
+    # eagerly access fields/relationships needed after the session closes
+    session.expunge(row)
+```
+
+Avoid holding Flask-SQLAlchemy global `db.session` transactions across child workflow execution waits. If using `db.session` is unavoidable in a small patch, explicitly `rollback()`/`close()` after the lookup and before `WorkflowTool._invoke()` calls `WorkflowAppGenerator.generate(...)`, but verify no returned ORM object triggers lazy loads afterward.
+
+**Regression test target:** A nested workflow-as-tool run should not leave provider/app/workflow lookup transactions open while waiting for the child workflow. Unit tests should assert session cleanup around `WorkflowTool._invoke()` / provider lookup, and integration load tests should verify `idle in transaction` does not grow with `SELECT tool_workflow_providers...` during nested workflow pressure tests.
+
+---
+
 ## Self-Review Notes
 
 Spec coverage:
 - ActiveMQ publisher abstraction: Tasks 1-2.
-- ActiveMQ process-level singleton, bounded reconnect retry, close lifecycle, and pressure-regression validation: Task 8.
+- ActiveMQ process-level singleton, bounded reconnect retry, warm-up, pool lifecycle, and pressure-regression validation: Task 8.
 - Node execution async save with fail-open and cache: Task 3.
 - Workflow runs remain synchronous: explicitly out of async tasks; workflow execution repository tests remain in verification.
 - Debugging sync routing and backward-compatible node constructor defaults: Tasks 3-4.
@@ -1669,5 +1737,6 @@ Spec coverage:
 - Tracing node snapshots including Arize/Phoenix: Tasks 5-6.
 - Eventual consistency and consumer contracts: encoded in node event payloads and preserved in spec; consumer is out of repo scope.
 - Security/config docs: Task 7.
+- Nested workflow-as-tool SQLAlchemy `idle in transaction` / QueuePool exhaustion is documented as a follow-up task because it is a separate DB session lifetime issue exposed by higher throughput.
 
 No placeholders remain; implementation tasks include exact file paths, concrete code shapes, commands, expected results, and commit points.

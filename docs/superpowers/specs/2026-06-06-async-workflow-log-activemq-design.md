@@ -26,7 +26,7 @@ The target is to reduce database pressure for production workflow invocations wh
 - Supporting Kafka or other queue providers in this version.
 - Supporting ActiveMQ topic broadcasting in this version.
 - Adding a local durable buffer inside Dify API.
-- Adding an ActiveMQ connection pool in the first reliability fix; use one reusable publisher connection per API worker process first.
+- Adding a durable local retry buffer inside Dify API for publish failures.
 - Changing database schema.
 - Making console debugging asynchronous.
 - Guaranteeing exactly-once delivery.
@@ -267,6 +267,7 @@ WORKFLOW_LOG_ACTIVEMQ_PORT=61613
 WORKFLOW_LOG_ACTIVEMQ_USERNAME=
 WORKFLOW_LOG_ACTIVEMQ_PASSWORD=
 WORKFLOW_LOG_ACTIVEMQ_DESTINATION=/queue/dify.workflow.logs
+WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE=1
 WORKFLOW_LOG_PUBLISH_TIMEOUT=0.2
 WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1
 ```
@@ -277,6 +278,7 @@ Notes:
 - This version should accept only `activemq` as the queue provider when async publishing is enabled.
 - ActiveMQ client imports should be lazy or optional so default installations are not broken when async publishing is disabled.
 - If async publishing is enabled and the STOMP client dependency is unavailable, startup or first publisher creation should fail clearly instead of silently pretending logs are being published.
+- `WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE=1` preserves the original single-connection behavior by default. Increase it, for example to `4`, when high-concurrency load tests show ActiveMQ producer `lock_wait_ms` tail latency.
 - `WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1` means one retry after the initial failed connect/send attempt. The default preserves fail-open behavior while recovering common stale connection and broker-side idle close cases.
 
 ## Message Format
@@ -369,27 +371,29 @@ Each message is consumed by one pod. The consumer must handle at-least-once deli
 
 ## Publisher Connection Lifecycle
 
-The first reliability fix should use a **process-level singleton ActiveMQ publisher with one reusable STOMP connection per API worker process**. Do not add a connection pool in this version unless later load tests prove the single per-worker connection is a bottleneck.
+The publisher should use a **process-level singleton ActiveMQ publisher with a small configurable STOMP producer connection pool per API worker process**.
 
 Rationale:
 
 - The observed failure is consistent with per-workflow-run publisher/connection lifecycle leakage or stale connection handling, not proven send throughput saturation.
 - Dify API deployments commonly run multiple worker processes; each process gets its own singleton publisher and therefore its own STOMP connection.
-- A single connection guarded by a lock is simpler and safer than a pool for `stomp.py`, where concurrent send behavior across shared connections is not the design target.
-- A pool can be added later behind the same `WorkflowLogPublisher` abstraction if metrics show lock wait or publish latency is too high.
+- Initial testing showed one connection per worker was stable but created producer lock tail latency at high concurrency.
+- A small pool keeps connection lifecycle bounded while allowing concurrent sends through independent STOMP connections.
 
 Expected behavior:
 
 - `create_workflow_log_publisher(config)` returns a process-level cached publisher for the same ActiveMQ configuration instead of allocating a new publisher for every workflow run.
-- Connection reuse is per API process. Multi-process workers maintain independent publishers and independent STOMP connections.
+- Connection reuse is per API process. Multi-process workers maintain independent publishers and independent STOMP producer pools.
+- Pool size is controlled by `WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE`, defaulting to `1` for backward compatibility.
 - Publish, reconnect, and close operations must be thread-safe because app worker threads may share the singleton publisher.
-- Lazily create the STOMP connection on first publish.
+- Warm up the publisher during API worker startup when async ActiveMQ publishing is enabled so cold-start traffic does not stampede the first lazy connection.
+- Lazily create any missing STOMP connection on first publish as fallback if warm-up failed or a slot was reset.
 - Before reusing a connection, check whether the client exposes an `is_connected()` method; if it exists and returns false, reset and reconnect.
-- Reuse the connection for subsequent publishes in the API process.
+- Select pool slots round-robin and reuse each slot connection for subsequent publishes in the API process.
 - Apply a short publish timeout from `WORKFLOW_LOG_PUBLISH_TIMEOUT` to connection creation and send operations.
 - On connect or send failure, close/reset the connection and retry up to `WORKFLOW_LOG_PUBLISH_MAX_RETRIES` times.
 - If all attempts fail, raise to the repository so the repository can log context and drop the event according to fail-open semantics.
-- Register a process-exit cleanup hook or equivalent application shutdown hook that disconnects the singleton publisher.
+- Register a process-exit cleanup hook or equivalent application shutdown hook that disconnects all pool slot connections.
 - Do not block workflow execution on long broker reconnect loops; retries must be bounded and short.
 
 ### Retry Semantics
@@ -405,6 +409,62 @@ For each event:
 5. The repository catches the exception, logs `workflow_run_id` and `node_execution_id`, increments failure/drop metrics when available, and returns without synchronous DB fallback.
 
 With the default `WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1`, an event gets the initial attempt plus one reconnect attempt. This should recover common `stomp.exception.NotConnectedException` cases caused by stale connections or broker-side idle close, while preserving workflow latency bounds.
+
+## Nested Workflow-as-Tool DB Session Finding
+
+During high-concurrency nested workflow testing, a new bottleneck appeared after ActiveMQ producer warm-up and pooling improved producer latency. The failing scenario is a parent workflow invoking a child workflow as a tool; each workflow only contains start/end nodes, so the workload isolates workflow nesting overhead.
+
+Observed error:
+
+```text
+sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 overflow 0 reached, connection timed out, timeout 30.00
+```
+
+This is an application-side SQLAlchemy pool exhaustion error, not a PostgreSQL `max_connections` rejection and not an ActiveMQ producer/consumer issue.
+
+Live PostgreSQL diagnostics during the nested workflow pressure test showed many transactions stuck as `idle in transaction`:
+
+```text
+state                | count
+---------------------+------
+idle in transaction  | 52
+idle                 | 12
+active               | 6
+```
+
+The dominant last query was:
+
+```text
+SELECT tool_workflow_providers.id AS tool_workflow_providers_id, ...
+```
+
+Grouped evidence:
+
+```text
+idle in transaction | SELECT tool_workflow_providers... | 32
+idle in transaction | SELECT workflows...               | 2
+idle in transaction | SELECT apps...                    | 1+
+idle in transaction | SELECT accounts...                | 1+
+```
+
+This points to the workflow-as-tool path holding Flask-SQLAlchemy global `db.session` transactions while parent workflow execution waits for nested child workflow completion.
+
+Likely path:
+
+```text
+ToolNode._run
+  -> ToolManager.get_workflow_tool_runtime(...)
+      -> db.session query WorkflowToolProvider / tool_workflow_providers
+      -> WorkflowToolProviderController.from_db(...)
+      -> WorkflowToolProviderController._get_db_provider_tool(...)
+  -> ToolEngine.generic_invoke(...)
+      -> WorkflowTool._invoke(...)
+          -> WorkflowTool._get_app(...)
+          -> WorkflowTool._get_workflow(...)
+          -> child WorkflowAppGenerator.generate(...)
+```
+
+Required follow-up: fix workflow-as-tool DB session lifetimes so read-only provider/app/workflow lookup transactions end before invoking the child workflow. Prefer short-lived explicit SQLAlchemy sessions with `expire_on_commit=False`, eager access to required fields, and object detachment/copying where needed. Avoid allowing global `db.session` transactions to cross nested workflow execution waits.
 
 ## Security Notes
 
@@ -487,4 +547,4 @@ This design is backward-compatible because async publishing is disabled by defau
 - Add repository or trace-task accessors for same-run node execution snapshots so tracing does not depend on async node DB writes.
 - Keep trace snapshot DTOs JSON-compatible and provider-neutral; add provider-specific adapters where existing providers expect DB-row-like fields.
 - Keep the publisher interface small and dedicated to workflow logs; do not generalize it into a broad messaging framework in this version.
-- Prefer the process-level singleton plus bounded retry before adding a connection pool. Add a pool only if measured publish latency or lock contention shows the singleton is the bottleneck.
+- Use the process-level singleton plus bounded retry and warm-up as the baseline, with a small configurable per-worker connection pool when measured publish lock contention shows one STOMP connection per worker is the bottleneck.
