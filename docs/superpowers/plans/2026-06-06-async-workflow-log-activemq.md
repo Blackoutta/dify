@@ -4,7 +4,7 @@
 
 **Goal:** Publish non-debugging workflow node execution logs to ActiveMQ asynchronously while keeping `workflow_runs` synchronous, preserving debugging sync writes, runtime repository semantics, and complete tracing.
 
-**Architecture:** Keep `SQLAlchemyWorkflowExecutionRepository` synchronous for all invocation types. Add a workflow-node-log publisher abstraction with an ActiveMQ STOMP implementation and explicit node `WorkflowLogWriteMode`; only `SQLAlchemyWorkflowNodeExecutionRepository` switches between sync DB persistence and async node-event publication. Tracing receives JSON-safe node execution runtime snapshots so all providers, including Arize/Phoenix, do not depend on async node DB persistence.
+**Architecture:** Keep `SQLAlchemyWorkflowExecutionRepository` synchronous for all invocation types. Add a workflow-node-log publisher abstraction with an ActiveMQ STOMP implementation and explicit node `WorkflowLogWriteMode`; only `SQLAlchemyWorkflowNodeExecutionRepository` switches between sync DB persistence and async node-event publication. The ActiveMQ publisher is a process-level singleton with one reusable STOMP connection per API worker, bounded reconnect retry, and shutdown cleanup; it does not use a connection pool in this version. Tracing receives JSON-safe node execution runtime snapshots so all providers, including Arize/Phoenix, do not depend on async node DB persistence.
 
 **Tech Stack:** Python, SQLAlchemy, Pydantic, Flask/Celery, ActiveMQ STOMP via optional `stomp.py`, pytest, unittest.mock.
 
@@ -20,8 +20,8 @@ Create:
 - `api/core/workflow/log_publisher/__init__.py` — exports node publisher types and factory.
 - `api/core/workflow/log_publisher/entities.py` — JSON-safe node event envelope, node write mode enum, payload helpers, trace snapshot DTOs.
 - `api/core/workflow/log_publisher/publisher.py` — `WorkflowLogPublisher` protocol and no-op implementation.
-- `api/core/workflow/log_publisher/activemq_publisher.py` — thread-safe lazy STOMP publisher.
-- `api/core/workflow/log_publisher/factory.py` — config-driven publisher creation.
+- `api/core/workflow/log_publisher/activemq_publisher.py` — thread-safe lazy STOMP publisher with bounded reconnect retry and close support.
+- `api/core/workflow/log_publisher/factory.py` — config-driven process-level singleton publisher creation keyed by ActiveMQ configuration.
 - `api/core/ops/workflow_trace_snapshots.py` — provider-neutral adapters from JSON node snapshots to provider-friendly objects.
 - `api/tests/unit_tests/core/workflow/log_publisher/test_entities.py`
 - `api/tests/unit_tests/core/workflow/log_publisher/test_activemq_publisher.py`
@@ -187,9 +187,14 @@ In `api/configs/feature/__init__.py`, add fields to `WorkflowConfig` after `MAX_
         description="Maximum seconds allowed for one workflow node execution log publish attempt.",
         default=0.2,
     )
+
+    WORKFLOW_LOG_PUBLISH_MAX_RETRIES: NonNegativeInt = Field(
+        description="Number of retries after the initial ActiveMQ workflow node execution log publish attempt fails.",
+        default=1,
+    )
 ```
 
-Ensure `PositiveFloat` is imported from `pydantic` if it is not already imported.
+Ensure `PositiveFloat` and `NonNegativeInt` are imported from `pydantic` if they are not already imported.
 
 - [ ] **Step 4: Implement entities**
 
@@ -1154,6 +1159,7 @@ WORKFLOW_LOG_ACTIVEMQ_USERNAME=
 WORKFLOW_LOG_ACTIVEMQ_PASSWORD=
 WORKFLOW_LOG_ACTIVEMQ_DESTINATION=/queue/dify.workflow.logs
 WORKFLOW_LOG_PUBLISH_TIMEOUT=0.2
+WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1
 ```
 
 - [ ] **Step 4: Update lock if required and commit**
@@ -1166,7 +1172,446 @@ git commit -m "chore: document async workflow node log configuration"
 
 Expected: lock updates only if dependency changed.
 
-## Task 8: Final Verification
+## Task 8: ActiveMQ Publisher Reliability Hardening
+
+**Files:**
+- Modify: `api/configs/feature/__init__.py`
+- Modify: `api/core/workflow/log_publisher/activemq_publisher.py`
+- Modify: `api/core/workflow/log_publisher/factory.py`
+- Modify: `api/core/workflow/log_publisher/publisher.py`
+- Modify: `api/tests/unit_tests/core/workflow/log_publisher/test_activemq_publisher.py`
+- Modify: `api/tests/unit_tests/core/workflow/log_publisher/test_factory.py`
+
+**Purpose:** Fix the observed second-pressure-round message loss caused by per-run publisher allocation and weak stale connection recovery. This task intentionally does **not** add an ActiveMQ connection pool. It uses one process-level publisher per API worker, one reusable STOMP connection per publisher, bounded retry, and explicit close.
+
+- [ ] **Step 1: Write failing retry and close tests**
+
+Append these tests to `api/tests/unit_tests/core/workflow/log_publisher/test_activemq_publisher.py`:
+
+```python
+def test_activemq_publisher_retries_send_failure_with_new_connection(monkeypatch):
+    created_connections = []
+
+    class FailsOnceConnection(FakeConnection):
+        def __init__(self, hosts, timeout=None):
+            super().__init__(hosts, timeout)
+            created_connections.append(self)
+
+        def send(self, destination, body, headers=None):
+            if len(created_connections) == 1:
+                raise RuntimeError("stale connection")
+            super().send(destination, body, headers)
+
+    fake_module = MagicMock()
+    fake_module.Connection = FailsOnceConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username=None,
+        password=None,
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+    )
+    event = WorkflowLogEvent.create(
+        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+        payload={"workflow_run_id": "run-1", "id": "node-1"},
+    )
+
+    publisher.publish(event)
+
+    assert len(created_connections) == 2
+    assert created_connections[0].disconnected is True
+    assert len(created_connections[1].sent) == 1
+    assert publisher._connection is created_connections[1]
+
+
+def test_activemq_publisher_retries_connect_failure(monkeypatch):
+    created_connections = []
+
+    class ConnectFailsOnceConnection(FakeConnection):
+        def __init__(self, hosts, timeout=None):
+            super().__init__(hosts, timeout)
+            created_connections.append(self)
+
+        def connect(self, username=None, passcode=None, wait=True):
+            if len(created_connections) == 1:
+                raise RuntimeError("connect failed")
+            super().connect(username=username, passcode=passcode, wait=wait)
+
+    fake_module = MagicMock()
+    fake_module.Connection = ConnectFailsOnceConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username="user",
+        password="pass",
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+    )
+    event = WorkflowLogEvent.create(
+        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+        payload={"workflow_run_id": "run-1", "id": "node-1"},
+    )
+
+    publisher.publish(event)
+
+    assert len(created_connections) == 2
+    assert created_connections[1].username == "user"
+    assert len(created_connections[1].sent) == 1
+
+
+def test_activemq_publisher_exhausts_retries_and_clears_connection(monkeypatch):
+    class AlwaysFailingConnection(FakeConnection):
+        def send(self, destination, body, headers=None):
+            raise RuntimeError("broker down")
+
+    fake_module = MagicMock()
+    fake_module.Connection = AlwaysFailingConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username=None,
+        password=None,
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+    )
+    event = WorkflowLogEvent.create(
+        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+        payload={"workflow_run_id": "run-1", "id": "node-1"},
+    )
+
+    try:
+        publisher.publish(event)
+    except RuntimeError as exc:
+        assert "broker down" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert publisher._connection is None
+
+
+def test_activemq_publisher_close_disconnects_cached_connection(monkeypatch):
+    fake_module = MagicMock()
+    fake_module.Connection = FakeConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username=None,
+        password=None,
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+    )
+    event = WorkflowLogEvent.create(
+        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+        payload={"workflow_run_id": "run-1", "id": "node-1"},
+    )
+
+    publisher.publish(event)
+    connection = publisher._connection
+
+    publisher.close()
+    publisher.close()
+
+    assert connection.disconnected is True
+    assert publisher._connection is None
+```
+
+- [ ] **Step 2: Write failing singleton factory tests**
+
+Append these tests to `api/tests/unit_tests/core/workflow/log_publisher/test_factory.py`:
+
+```python
+def _activemq_config(**overrides):
+    values = {
+        "WORKFLOW_LOG_ASYNC_ENABLED": True,
+        "WORKFLOW_LOG_QUEUE_PROVIDER": "activemq",
+        "WORKFLOW_LOG_ACTIVEMQ_HOST": "mq.local",
+        "WORKFLOW_LOG_ACTIVEMQ_PORT": 61613,
+        "WORKFLOW_LOG_ACTIVEMQ_USERNAME": "user",
+        "WORKFLOW_LOG_ACTIVEMQ_PASSWORD": "pass",
+        "WORKFLOW_LOG_ACTIVEMQ_DESTINATION": "/queue/dify.workflow.logs",
+        "WORKFLOW_LOG_PUBLISH_TIMEOUT": 0.2,
+        "WORKFLOW_LOG_PUBLISH_MAX_RETRIES": 1,
+    }
+    values.update(overrides)
+    return Mock(**values)
+
+
+def test_factory_reuses_process_singleton_for_same_activemq_config():
+    first = create_workflow_log_publisher(_activemq_config())
+    second = create_workflow_log_publisher(_activemq_config())
+
+    assert first is second
+
+
+def test_factory_creates_new_singleton_when_activemq_config_changes():
+    first = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_ACTIVEMQ_HOST="mq-a.local"))
+    second = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_ACTIVEMQ_HOST="mq-b.local"))
+
+    assert first is not second
+```
+
+- [ ] **Step 3: Run tests to verify they fail**
+
+Run:
+
+```bash
+cd api && uv run pytest -o addopts='' tests/unit_tests/core/workflow/log_publisher/test_activemq_publisher.py tests/unit_tests/core/workflow/log_publisher/test_factory.py -v
+```
+
+Expected: FAIL because `ActiveMQWorkflowLogPublisher.__init__()` does not accept `max_retries`, `close()` is missing, and factory calls return new instances.
+
+- [ ] **Step 4: Add retry configuration**
+
+In `api/configs/feature/__init__.py`, ensure `NonNegativeInt` is imported from `pydantic`, then add this field next to `WORKFLOW_LOG_PUBLISH_TIMEOUT`:
+
+```python
+    WORKFLOW_LOG_PUBLISH_MAX_RETRIES: NonNegativeInt = Field(
+        description="Number of retries after the initial ActiveMQ workflow node execution log publish attempt fails.",
+        default=1,
+    )
+```
+
+- [ ] **Step 5: Extend publisher protocol with close support**
+
+Update `api/core/workflow/log_publisher/publisher.py`:
+
+```python
+from __future__ import annotations
+
+from typing import Protocol
+
+from core.workflow.log_publisher.entities import WorkflowLogEvent
+
+
+class WorkflowLogPublisher(Protocol):
+    def publish(self, event: WorkflowLogEvent) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class NoopWorkflowLogPublisher:
+    def publish(self, event: WorkflowLogEvent) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+```
+
+- [ ] **Step 6: Implement bounded retry and close in the ActiveMQ publisher**
+
+Update `api/core/workflow/log_publisher/activemq_publisher.py` so the publisher keeps the existing lock but retries the full ensure/send operation:
+
+```python
+from __future__ import annotations
+
+import threading
+from typing import Any
+
+from core.workflow.log_publisher.entities import WorkflowLogEvent
+
+
+class ActiveMQWorkflowLogPublisher:
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        username: str | None,
+        password: str | None,
+        destination: str,
+        timeout: float,
+        max_retries: int = 1,
+    ) -> None:
+        self._host = host
+        self._port = port
+        self._username = username
+        self._password = password
+        self._destination = destination
+        self._timeout = timeout
+        self._max_retries = max(0, max_retries)
+        self._connection: Any | None = None
+        self._lock = threading.RLock()
+
+    def publish(self, event: WorkflowLogEvent) -> None:
+        headers = self._headers_for(event)
+        body = event.model_dump_json()
+        with self._lock:
+            last_error: Exception | None = None
+            for attempt in range(self._max_retries + 1):
+                try:
+                    connection = self._ensure_connection()
+                    connection.send(destination=self._destination, body=body, headers=headers)
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    self._reset_connection()
+                    if attempt >= self._max_retries:
+                        raise
+            if last_error is not None:
+                raise last_error
+
+    def close(self) -> None:
+        with self._lock:
+            self._reset_connection()
+
+    def _headers_for(self, event: WorkflowLogEvent) -> dict[str, str]:
+        headers = {
+            "event_type": event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type),
+            "schema_version": str(event.schema_version),
+            "content_type": "application/json",
+        }
+        group_id = event.payload.get("workflow_run_id") or event.payload.get("id")
+        if group_id:
+            headers["JMSXGroupID"] = str(group_id)
+        return headers
+
+    def _ensure_connection(self):
+        if self._connection is not None:
+            is_connected = getattr(self._connection, "is_connected", None)
+            if not callable(is_connected) or is_connected():
+                return self._connection
+            self._reset_connection()
+        try:
+            import stomp  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("stomp.py is required when async workflow log publishing is enabled") from exc
+
+        connection = stomp.Connection([(self._host, self._port)], timeout=self._timeout)
+        connection.connect(username=self._username, passcode=self._password, wait=True)
+        self._connection = connection
+        return connection
+
+    def _reset_connection(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is None:
+            return
+        try:
+            connection.disconnect()
+        except Exception:
+            pass
+```
+
+- [ ] **Step 7: Implement process-level singleton factory**
+
+Update `api/core/workflow/log_publisher/factory.py`:
+
+```python
+from __future__ import annotations
+
+import atexit
+import threading
+from dataclasses import dataclass
+
+from core.workflow.log_publisher.activemq_publisher import ActiveMQWorkflowLogPublisher
+from core.workflow.log_publisher.publisher import NoopWorkflowLogPublisher, WorkflowLogPublisher
+
+
+@dataclass(frozen=True)
+class _ActiveMQPublisherConfigKey:
+    host: str
+    port: int
+    username: str | None
+    password: str | None
+    destination: str
+    timeout: float
+    max_retries: int
+
+
+_singleton_lock = threading.RLock()
+_singleton_publishers: dict[_ActiveMQPublisherConfigKey, ActiveMQWorkflowLogPublisher] = {}
+
+
+def create_workflow_log_publisher(config) -> WorkflowLogPublisher:
+    if not config.WORKFLOW_LOG_ASYNC_ENABLED:
+        return NoopWorkflowLogPublisher()
+
+    provider = str(config.WORKFLOW_LOG_QUEUE_PROVIDER).lower()
+    if provider != "activemq":
+        raise ValueError(f"Unsupported workflow log queue provider: {config.WORKFLOW_LOG_QUEUE_PROVIDER}")
+
+    key = _ActiveMQPublisherConfigKey(
+        host=config.WORKFLOW_LOG_ACTIVEMQ_HOST,
+        port=config.WORKFLOW_LOG_ACTIVEMQ_PORT,
+        username=config.WORKFLOW_LOG_ACTIVEMQ_USERNAME,
+        password=config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD,
+        destination=config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION,
+        timeout=config.WORKFLOW_LOG_PUBLISH_TIMEOUT,
+        max_retries=config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES,
+    )
+    with _singleton_lock:
+        publisher = _singleton_publishers.get(key)
+        if publisher is not None:
+            return publisher
+        publisher = ActiveMQWorkflowLogPublisher(
+            host=key.host,
+            port=key.port,
+            username=key.username,
+            password=key.password,
+            destination=key.destination,
+            timeout=key.timeout,
+            max_retries=key.max_retries,
+        )
+        _singleton_publishers[key] = publisher
+        atexit.register(publisher.close)
+        return publisher
+```
+
+- [ ] **Step 8: Run publisher/factory tests and commit**
+
+Run:
+
+```bash
+cd api && uv run pytest -o addopts='' tests/unit_tests/core/workflow/log_publisher/test_activemq_publisher.py tests/unit_tests/core/workflow/log_publisher/test_factory.py -v
+```
+
+Expected: PASS.
+
+Commit:
+
+```bash
+git add api/configs/feature/__init__.py api/core/workflow/log_publisher api/tests/unit_tests/core/workflow/log_publisher
+git commit -m "fix: reuse ActiveMQ workflow log publisher connections"
+```
+
+- [ ] **Step 9: Run the original pressure-regression scenario**
+
+With Dify API configured for async workflow node logs and the Go consumer running, set the pressure-test target variables and run two consecutive production workflow pressure rounds:
+
+```bash
+export DIFY_WORKFLOW_API_TOKEN='set-to-the-test-workflow-api-token'
+export DIFY_WORKFLOW_RUN_URL='http://localhost:5001/v1/workflows/run'
+test -f payload.json
+hey -n 1000 -c 50 -m POST -H 'Content-Type: application/json' -H "Authorization: Bearer ${DIFY_WORKFLOW_API_TOKEN}" -d @payload.json "${DIFY_WORKFLOW_RUN_URL}"
+hey -n 1000 -c 50 -m POST -H 'Content-Type: application/json' -H "Authorization: Bearer ${DIFY_WORKFLOW_API_TOKEN}" -d @payload.json "${DIFY_WORKFLOW_RUN_URL}"
+```
+
+Expected after the second round:
+
+```text
+workflow_runs count for second round == 1000
+ActiveMQ enqueueCount increased during second round
+Go consumer logs show second-round receive/batch/write/ack activity
+workflow_runs with corresponding workflow_node_executions == 1000 after consumer drain
+Dify API logs do not contain repeated NotConnectedException publish failures
+```
+
+If a small number of publish failures remain, fail-open behavior is still correct, but this task is not complete until the connection lifecycle failure mode no longer causes an entire second pressure round to publish zero node execution events.
+
+## Task 9: Final Verification
 
 **Files:**
 - No code changes expected unless verification finds issues.
@@ -1203,11 +1648,12 @@ Expected: prints `ok`; must not require a running ActiveMQ broker or import `sto
 - [ ] **Step 3: Commit verification fixes if needed**
 
 ```bash
-git add <changed-files>
+git status --short
+git add api/configs/feature/__init__.py api/core/workflow/log_publisher api/core/repositories/sqlalchemy_workflow_node_execution_repository.py api/core/workflow api/core/ops api/tasks api/tests/unit_tests
 git commit -m "fix: stabilize async workflow node log implementation"
 ```
 
-If no fixes were needed, do not create an empty commit.
+Only run the `git add` and `git commit` commands when verification produced actual code or test fixes. If no fixes were needed, do not create an empty commit.
 
 ---
 
@@ -1215,6 +1661,7 @@ If no fixes were needed, do not create an empty commit.
 
 Spec coverage:
 - ActiveMQ publisher abstraction: Tasks 1-2.
+- ActiveMQ process-level singleton, bounded reconnect retry, close lifecycle, and pressure-regression validation: Task 8.
 - Node execution async save with fail-open and cache: Task 3.
 - Workflow runs remain synchronous: explicitly out of async tasks; workflow execution repository tests remain in verification.
 - Debugging sync routing and backward-compatible node constructor defaults: Tasks 3-4.

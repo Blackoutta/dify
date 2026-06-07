@@ -14,6 +14,8 @@ The target is to reduce database pressure for production workflow invocations wh
 - Keep existing workflow tracing complete when async workflow log publishing is enabled.
 - Use ActiveMQ in this version.
 - Keep the Dify API side decoupled from ActiveMQ-specific details through a publisher abstraction.
+- Reuse ActiveMQ publisher connections safely at API-process scope instead of creating one connection per workflow run.
+- Retry transient ActiveMQ connect/send failures by resetting the STOMP connection and reconnecting before dropping an event.
 - Use fail-open behavior: workflow execution must continue even if log publishing fails.
 - Do not implement the consumer in this repository.
 - Preserve backward compatibility by keeping async publishing disabled by default.
@@ -24,6 +26,7 @@ The target is to reduce database pressure for production workflow invocations wh
 - Supporting Kafka or other queue providers in this version.
 - Supporting ActiveMQ topic broadcasting in this version.
 - Adding a local durable buffer inside Dify API.
+- Adding an ActiveMQ connection pool in the first reliability fix; use one reusable publisher connection per API worker process first.
 - Changing database schema.
 - Making console debugging asynchronous.
 - Guaranteeing exactly-once delivery.
@@ -265,6 +268,7 @@ WORKFLOW_LOG_ACTIVEMQ_USERNAME=
 WORKFLOW_LOG_ACTIVEMQ_PASSWORD=
 WORKFLOW_LOG_ACTIVEMQ_DESTINATION=/queue/dify.workflow.logs
 WORKFLOW_LOG_PUBLISH_TIMEOUT=0.2
+WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1
 ```
 
 Notes:
@@ -273,6 +277,7 @@ Notes:
 - This version should accept only `activemq` as the queue provider when async publishing is enabled.
 - ActiveMQ client imports should be lazy or optional so default installations are not broken when async publishing is disabled.
 - If async publishing is enabled and the STOMP client dependency is unavailable, startup or first publisher creation should fail clearly instead of silently pretending logs are being published.
+- `WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1` means one retry after the initial failed connect/send attempt. The default preserves fail-open behavior while recovering common stale connection and broker-side idle close cases.
 
 ## Message Format
 
@@ -364,19 +369,42 @@ Each message is consumed by one pod. The consumer must handle at-least-once deli
 
 ## Publisher Connection Lifecycle
 
-The ActiveMQ publisher should reuse connections instead of creating a new connection per message.
+The first reliability fix should use a **process-level singleton ActiveMQ publisher with one reusable STOMP connection per API worker process**. Do not add a connection pool in this version unless later load tests prove the single per-worker connection is a bottleneck.
+
+Rationale:
+
+- The observed failure is consistent with per-workflow-run publisher/connection lifecycle leakage or stale connection handling, not proven send throughput saturation.
+- Dify API deployments commonly run multiple worker processes; each process gets its own singleton publisher and therefore its own STOMP connection.
+- A single connection guarded by a lock is simpler and safer than a pool for `stomp.py`, where concurrent send behavior across shared connections is not the design target.
+- A pool can be added later behind the same `WorkflowLogPublisher` abstraction if metrics show lock wait or publish latency is too high.
 
 Expected behavior:
 
-- Connection reuse is per API process. Multi-process workers maintain independent connections.
-- Publish and reconnect operations must be thread-safe if a publisher instance can be shared by multiple threads.
-- Implementations may either protect a shared process connection with a lock or use thread-local connections.
+- `create_workflow_log_publisher(config)` returns a process-level cached publisher for the same ActiveMQ configuration instead of allocating a new publisher for every workflow run.
+- Connection reuse is per API process. Multi-process workers maintain independent publishers and independent STOMP connections.
+- Publish, reconnect, and close operations must be thread-safe because app worker threads may share the singleton publisher.
 - Lazily create the STOMP connection on first publish.
-- Reuse the connection for subsequent publishes in the API process or thread, depending on the chosen thread-safety model.
-- Apply a short publish timeout from `WORKFLOW_LOG_PUBLISH_TIMEOUT`.
-- On connection or send failure, close/reset the connection and fail-open for that message.
-- Allow a later publish to reconnect lazily.
-- Do not block workflow execution on long broker reconnect loops.
+- Before reusing a connection, check whether the client exposes an `is_connected()` method; if it exists and returns false, reset and reconnect.
+- Reuse the connection for subsequent publishes in the API process.
+- Apply a short publish timeout from `WORKFLOW_LOG_PUBLISH_TIMEOUT` to connection creation and send operations.
+- On connect or send failure, close/reset the connection and retry up to `WORKFLOW_LOG_PUBLISH_MAX_RETRIES` times.
+- If all attempts fail, raise to the repository so the repository can log context and drop the event according to fail-open semantics.
+- Register a process-exit cleanup hook or equivalent application shutdown hook that disconnects the singleton publisher.
+- Do not block workflow execution on long broker reconnect loops; retries must be bounded and short.
+
+### Retry Semantics
+
+A publish attempt includes both `_ensure_connection()` and `connection.send(...)`.
+
+For each event:
+
+1. Try to ensure a connected STOMP connection and send the event.
+2. If connect or send raises, reset/disconnect the current connection.
+3. Retry while attempts remain.
+4. After the final failed attempt, raise the exception to the repository.
+5. The repository catches the exception, logs `workflow_run_id` and `node_execution_id`, increments failure/drop metrics when available, and returns without synchronous DB fallback.
+
+With the default `WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1`, an event gets the initial attempt plus one reconnect attempt. This should recover common `stomp.exception.NotConnectedException` cases caused by stale connections or broker-side idle close, while preserving workflow latency bounds.
 
 ## Security Notes
 
@@ -400,12 +428,17 @@ Publishing failures are fail-open:
 - Continue workflow execution normally.
 - Do not fall back to synchronous node execution database writes, because fallback can recreate the database overload this feature is meant to avoid.
 
-Recommended future metrics:
+Recommended metrics:
 
 - `workflow_log_publish_success_total`
 - `workflow_log_publish_failed_total`
+- `workflow_log_publish_retry_total`
 - `workflow_log_publish_dropped_total`
 - `workflow_log_publish_latency_seconds`
+- `workflow_log_publisher_reconnect_total`
+- `workflow_log_publisher_connection_reset_total`
+
+Metrics are not a substitute for fail-open behavior. They should be added as soon as the project has a suitable metrics hook for this path, because they are the primary way to detect silent node-log loss during load tests and production operation.
 
 ## Testing Strategy
 
@@ -428,8 +461,18 @@ Recommended future metrics:
   - node spans are still produced when the DB has not yet been updated by the consumer.
 - Unit-test payload serialization for node execution events, including node `triggered_from`.
 - Unit-test ActiveMQ publisher headers, especially `JMSXGroupID`.
+- Unit-test ActiveMQ publisher retry behavior:
+  - stale/not-connected send resets the connection and retries on a new connection.
+  - connect failure resets and retries before dropping.
+  - exhausted retries clear the cached connection and raise to the repository.
+  - `close()` disconnects the cached connection and is safe to call repeatedly.
+- Unit-test factory singleton behavior:
+  - repeated calls with the same ActiveMQ config return the same process-level publisher.
+  - changed ActiveMQ config creates a new publisher so tests and reconfiguration do not reuse stale settings.
+  - disabled async publishing still returns a no-op publisher.
 - Unit-test provider validation: async enabled with unsupported provider should fail configuration or fall back explicitly according to implementation choice.
 - Keep existing repository tests passing for default configuration.
+- Integration/load-test the original failure mode: run two consecutive production workflow pressure rounds, such as `hey -n 1000 -c 50`, and assert the second round creates ActiveMQ enqueue events and corresponding `workflow_node_executions` after consumer drain.
 
 ## Compatibility
 
@@ -444,3 +487,4 @@ This design is backward-compatible because async publishing is disabled by defau
 - Add repository or trace-task accessors for same-run node execution snapshots so tracing does not depend on async node DB writes.
 - Keep trace snapshot DTOs JSON-compatible and provider-neutral; add provider-specific adapters where existing providers expect DB-row-like fields.
 - Keep the publisher interface small and dedicated to workflow logs; do not generalize it into a broad messaging framework in this version.
+- Prefer the process-level singleton plus bounded retry before adding a connection pool. Add a pool only if measured publish latency or lock contention shows the singleton is the bottleneck.
