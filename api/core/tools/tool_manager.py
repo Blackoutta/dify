@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union, cast
 from yarl import URL
 
 import contexts
+from core.db.session_factory import session_factory
 from core.plugin.entities.plugin import ToolProviderID
 from core.plugin.impl.tool import PluginToolManager
 from core.tools.__base.tool_provider import ToolProviderController
@@ -267,23 +268,26 @@ class ToolManager:
                 ),
             )
         elif provider_type == ToolProviderType.WORKFLOW:
-            workflow_provider = (
-                db.session.query(WorkflowToolProvider)
-                .filter(WorkflowToolProvider.tenant_id == tenant_id, WorkflowToolProvider.id == provider_id)
-                .first()
-            )
+            with session_factory.create_session() as session, session.begin():
+                workflow_provider = (
+                    session.query(WorkflowToolProvider)
+                    .filter(WorkflowToolProvider.tenant_id == tenant_id, WorkflowToolProvider.id == provider_id)
+                    .first()
+                )
 
-            if workflow_provider is None:
-                raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
+                if workflow_provider is None:
+                    raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
 
-            controller = ToolTransformService.workflow_provider_to_controller(db_provider=workflow_provider)
-            controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=workflow_provider.tenant_id)
+                controller = ToolTransformService.workflow_provider_to_controller(db_provider=workflow_provider)
+                provider_tenant_id = workflow_provider.tenant_id
+
+            controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=provider_tenant_id)
             if controller_tools is None or len(controller_tools) == 0:
                 raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
 
             return cast(
                 WorkflowTool,
-                controller.get_tools(tenant_id=workflow_provider.tenant_id)[0].fork_tool_runtime(
+                controller_tools[0].fork_tool_runtime(
                     runtime=ToolRuntime(
                         tenant_id=tenant_id,
                         credentials={},
