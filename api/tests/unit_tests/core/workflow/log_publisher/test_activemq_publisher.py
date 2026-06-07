@@ -1,3 +1,4 @@
+import logging
 import sys
 from unittest.mock import MagicMock
 
@@ -193,6 +194,42 @@ def test_activemq_publisher_exhausts_retries_and_clears_connection(monkeypatch):
         publisher.publish(event)
 
     assert publisher._connection is None
+
+
+def test_activemq_publisher_logs_slow_publish_timing(monkeypatch, caplog):
+    fake_module = MagicMock()
+    fake_module.Connection = FakeConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    timings = iter([10.0, 10.2, 10.7])
+    monkeypatch.setattr("core.workflow.log_publisher.activemq_publisher.time.perf_counter", lambda: next(timings))
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username=None,
+        password=None,
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+        slow_log_threshold=0.1,
+    )
+    event = WorkflowLogEvent.create(
+        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+        payload={"workflow_run_id": "run-1", "id": "node-1"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="core.workflow.log_publisher.activemq_publisher"):
+        publisher.publish(event)
+
+    record = next(record for record in caplog.records if record.message == "Slow ActiveMQ workflow log publish")
+    assert record.workflow_run_id == "run-1"
+    assert record.destination == "/queue/dify.workflow.logs"
+    assert record.success is True
+    assert record.attempts == 1
+    assert record.total_ms == pytest.approx(700.0)
+    assert record.lock_wait_ms == pytest.approx(200.0)
+    assert record.send_ms == pytest.approx(500.0)
 
 
 def test_activemq_publisher_close_disconnects_cached_connection(monkeypatch):

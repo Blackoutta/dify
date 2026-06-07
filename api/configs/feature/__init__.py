@@ -5,6 +5,7 @@ from pydantic import (
     Field,
     HttpUrl,
     NegativeInt,
+    NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
@@ -556,6 +557,11 @@ class WorkflowConfig(BaseSettings):
     WORKFLOW_LOG_PUBLISH_MAX_RETRIES: NonNegativeInt = Field(
         description="Number of retries after the initial ActiveMQ workflow node execution log publish attempt fails.",
         default=1,
+    )
+
+    WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD: NonNegativeFloat = Field(
+        description="Log ActiveMQ workflow log publish timing when one publish takes at least this many seconds.",
+        default=0.5,
     )
 
 

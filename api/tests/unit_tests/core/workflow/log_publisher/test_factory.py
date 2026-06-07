@@ -26,6 +26,7 @@ def _activemq_config(**overrides):
         "WORKFLOW_LOG_ACTIVEMQ_DESTINATION": "/queue/dify.workflow.logs",
         "WORKFLOW_LOG_PUBLISH_TIMEOUT": 0.2,
         "WORKFLOW_LOG_PUBLISH_MAX_RETRIES": 1,
+        "WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD": 0.5,
     }
     values.update(overrides)
     return Mock(**values)
@@ -49,6 +50,13 @@ def test_factory_reuses_process_singleton_for_same_activemq_config():
     second = create_workflow_log_publisher(_activemq_config())
 
     assert first is second
+
+
+def test_factory_creates_new_singleton_when_slow_log_threshold_changes():
+    first = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD=0.1))
+    second = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD=0.2))
+
+    assert first is not second
 
 
 def test_factory_creates_new_singleton_when_activemq_config_changes():

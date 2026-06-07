@@ -17,6 +17,7 @@ class _ActiveMQPublisherConfigKey:
     destination: str
     timeout: float
     max_retries: int
+    slow_log_threshold: float
 
 
 _singleton_lock = threading.RLock()
@@ -39,6 +40,7 @@ def create_workflow_log_publisher(config) -> WorkflowLogPublisher:
         destination=config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION,
         timeout=config.WORKFLOW_LOG_PUBLISH_TIMEOUT,
         max_retries=config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES,
+        slow_log_threshold=config.WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD,
     )
 
     with _singleton_lock:
@@ -54,6 +56,7 @@ def create_workflow_log_publisher(config) -> WorkflowLogPublisher:
             destination=key.destination,
             timeout=key.timeout,
             max_retries=key.max_retries,
+            slow_log_threshold=key.slow_log_threshold,
         )
         _singleton_publishers[key] = publisher
         atexit.register(publisher.close)
