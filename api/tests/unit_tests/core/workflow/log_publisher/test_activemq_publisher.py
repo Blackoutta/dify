@@ -219,6 +219,101 @@ def test_activemq_publisher_warm_up_establishes_connection(monkeypatch):
     assert connection.connected is True
 
 
+def test_activemq_publisher_warm_up_establishes_pool_connections(monkeypatch):
+    created_connections = []
+
+    class TrackingConnection(FakeConnection):
+        def __init__(self, hosts, timeout=None):
+            super().__init__(hosts, timeout)
+            created_connections.append(self)
+
+    fake_module = MagicMock()
+    fake_module.Connection = TrackingConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username="user",
+        password="pass",
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+        pool_size=4,
+    )
+
+    publisher.warm_up()
+
+    assert len(created_connections) == 4
+    assert all(connection.connected for connection in created_connections)
+
+
+def test_activemq_publisher_round_robins_across_pool_connections(monkeypatch):
+    created_connections = []
+
+    class TrackingConnection(FakeConnection):
+        def __init__(self, hosts, timeout=None):
+            super().__init__(hosts, timeout)
+            created_connections.append(self)
+
+    fake_module = MagicMock()
+    fake_module.Connection = TrackingConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username=None,
+        password=None,
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+        pool_size=2,
+    )
+    event = WorkflowLogEvent.create(
+        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+        payload={"workflow_run_id": "run-1", "id": "node-1"},
+    )
+
+    publisher.publish(event)
+    publisher.publish(event)
+    publisher.publish(event)
+
+    assert len(created_connections) == 2
+    assert len(created_connections[0].sent) == 2
+    assert len(created_connections[1].sent) == 1
+
+
+def test_activemq_publisher_close_disconnects_all_pool_connections(monkeypatch):
+    created_connections = []
+
+    class TrackingConnection(FakeConnection):
+        def __init__(self, hosts, timeout=None):
+            super().__init__(hosts, timeout)
+            created_connections.append(self)
+
+    fake_module = MagicMock()
+    fake_module.Connection = TrackingConnection
+    monkeypatch.setitem(sys.modules, "stomp", fake_module)
+
+    publisher = ActiveMQWorkflowLogPublisher(
+        host="mq.local",
+        port=61613,
+        username=None,
+        password=None,
+        destination="/queue/dify.workflow.logs",
+        timeout=0.2,
+        max_retries=1,
+        pool_size=3,
+    )
+
+    publisher.warm_up()
+    publisher.close()
+
+    assert len(created_connections) == 3
+    assert all(connection.disconnected for connection in created_connections)
+
+
 def test_activemq_publisher_logs_slow_publish_timing(monkeypatch, caplog):
     fake_module = MagicMock()
     fake_module.Connection = FakeConnection

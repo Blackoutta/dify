@@ -549,6 +549,11 @@ class WorkflowConfig(BaseSettings):
         default="/queue/dify.workflow.logs",
     )
 
+    WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE: PositiveInt = Field(
+        description="Number of ActiveMQ STOMP producer connections per API worker process.",
+        default=1,
+    )
+
     WORKFLOW_LOG_PUBLISH_TIMEOUT: PositiveFloat = Field(
         description="Maximum seconds allowed for one workflow log publish attempt.",
         default=0.2,

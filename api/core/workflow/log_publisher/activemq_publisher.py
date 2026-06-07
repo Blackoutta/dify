@@ -3,11 +3,19 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from core.workflow.log_publisher.entities import WorkflowLogEvent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ConnectionSlot:
+    index: int
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    connection: Any | None = None
 
 
 class ActiveMQWorkflowLogPublisher:
@@ -22,6 +30,7 @@ class ActiveMQWorkflowLogPublisher:
         timeout: float,
         max_retries: int = 1,
         slow_log_threshold: float = 0.5,
+        pool_size: int = 1,
     ) -> None:
         self._host = host
         self._port = port
@@ -31,8 +40,12 @@ class ActiveMQWorkflowLogPublisher:
         self._timeout = timeout
         self._max_retries = max(0, max_retries)
         self._slow_log_threshold = max(0.0, slow_log_threshold)
+        self._pool_size = max(1, pool_size)
+        self._slots = [_ConnectionSlot(index=index) for index in range(self._pool_size)]
+        self._slot_selection_lock = threading.RLock()
+        self._next_slot_index = 0
+        # Backward-compatible test/debug handle for the first slot connection.
         self._connection: Any | None = None
-        self._lock = threading.RLock()
 
     def publish(self, event: WorkflowLogEvent) -> None:
         headers = self._headers_for(event)
@@ -42,13 +55,14 @@ class ActiveMQWorkflowLogPublisher:
         attempts = 0
         success = False
 
+        slot = self._select_slot()
         try:
-            with self._lock:
+            with slot.lock:
                 lock_wait_seconds = time.perf_counter() - publish_started_at
                 for attempt in range(self._max_retries + 1):
                     attempts = attempt + 1
                     try:
-                        connection = self._ensure_connection()
+                        connection = self._ensure_connection(slot)
                         connection.send(
                             destination=self._destination,
                             body=body,
@@ -57,7 +71,7 @@ class ActiveMQWorkflowLogPublisher:
                         success = True
                         return
                     except Exception:
-                        self._reset_connection()
+                        self._reset_connection(slot)
                         if attempt >= self._max_retries:
                             raise
         finally:
@@ -69,15 +83,18 @@ class ActiveMQWorkflowLogPublisher:
                 send_seconds=max(0.0, total_seconds - lock_wait_seconds),
                 attempts=attempts,
                 success=success,
+                pool_slot=slot.index,
             )
 
     def warm_up(self) -> None:
-        with self._lock:
-            self._ensure_connection()
+        for slot in self._slots:
+            with slot.lock:
+                self._ensure_connection(slot)
 
     def close(self) -> None:
-        with self._lock:
-            self._reset_connection()
+        for slot in self._slots:
+            with slot.lock:
+                self._reset_connection(slot)
 
     def _log_slow_publish(
         self,
@@ -88,6 +105,7 @@ class ActiveMQWorkflowLogPublisher:
         send_seconds: float,
         attempts: int,
         success: bool,
+        pool_slot: int,
     ) -> None:
         if total_seconds < self._slow_log_threshold:
             return
@@ -96,7 +114,7 @@ class ActiveMQWorkflowLogPublisher:
         logger.warning(
             "Slow ActiveMQ workflow log publish "
             "event_id=%s workflow_run_id=%s node_execution_id=%s destination=%s "
-            "total_ms=%.3f lock_wait_ms=%.3f send_ms=%.3f attempts=%s success=%s",
+            "total_ms=%.3f lock_wait_ms=%.3f send_ms=%.3f attempts=%s success=%s pool_slot=%s pool_size=%s",
             event.event_id,
             workflow_run_id,
             node_execution_id,
@@ -106,6 +124,8 @@ class ActiveMQWorkflowLogPublisher:
             send_seconds * 1000,
             attempts,
             success,
+            pool_slot,
+            self._pool_size,
             extra={
                 "event_id": event.event_id,
                 "workflow_run_id": workflow_run_id,
@@ -116,6 +136,8 @@ class ActiveMQWorkflowLogPublisher:
                 "send_ms": send_seconds * 1000,
                 "attempts": attempts,
                 "success": success,
+                "pool_slot": pool_slot,
+                "pool_size": self._pool_size,
             },
         )
 
@@ -130,12 +152,18 @@ class ActiveMQWorkflowLogPublisher:
             headers["JMSXGroupID"] = str(group_id)
         return headers
 
-    def _ensure_connection(self):
-        if self._connection is not None:
-            is_connected = getattr(self._connection, "is_connected", None)
+    def _select_slot(self) -> _ConnectionSlot:
+        with self._slot_selection_lock:
+            slot = self._slots[self._next_slot_index]
+            self._next_slot_index = (self._next_slot_index + 1) % self._pool_size
+            return slot
+
+    def _ensure_connection(self, slot: _ConnectionSlot):
+        if slot.connection is not None:
+            is_connected = getattr(slot.connection, "is_connected", None)
             if not callable(is_connected) or is_connected():
-                return self._connection
-            self._reset_connection()
+                return slot.connection
+            self._reset_connection(slot)
 
         try:
             import stomp  # type: ignore
@@ -144,15 +172,20 @@ class ActiveMQWorkflowLogPublisher:
 
         connection = stomp.Connection([(self._host, self._port)], timeout=self._timeout)
         connection.connect(username=self._username, passcode=self._password, wait=True)
-        self._connection = connection
+        slot.connection = connection
+        self._sync_legacy_connection_handle()
         return connection
 
-    def _reset_connection(self) -> None:
-        connection = self._connection
-        self._connection = None
+    def _reset_connection(self, slot: _ConnectionSlot) -> None:
+        connection = slot.connection
+        slot.connection = None
+        self._sync_legacy_connection_handle()
         if connection is None:
             return
         try:
             connection.disconnect()
         except Exception:
             pass
+
+    def _sync_legacy_connection_handle(self) -> None:
+        self._connection = self._slots[0].connection

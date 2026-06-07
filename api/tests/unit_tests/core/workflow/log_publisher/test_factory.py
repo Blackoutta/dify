@@ -27,6 +27,7 @@ def _activemq_config(**overrides):
         "WORKFLOW_LOG_PUBLISH_TIMEOUT": 0.2,
         "WORKFLOW_LOG_PUBLISH_MAX_RETRIES": 1,
         "WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD": 0.5,
+        "WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE": 1,
     }
     values.update(overrides)
     return Mock(**values)
@@ -55,6 +56,13 @@ def test_factory_reuses_process_singleton_for_same_activemq_config():
 def test_factory_creates_new_singleton_when_slow_log_threshold_changes():
     first = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD=0.1))
     second = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD=0.2))
+
+    assert first is not second
+
+
+def test_factory_creates_new_singleton_when_pool_size_changes():
+    first = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE=1))
+    second = create_workflow_log_publisher(_activemq_config(WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE=4))
 
     assert first is not second
 
