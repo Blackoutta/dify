@@ -87,12 +87,25 @@ class ActiveMQWorkflowLogPublisher:
     ) -> None:
         if total_seconds < self._slow_log_threshold:
             return
+        workflow_run_id = event.payload.get("workflow_run_id")
+        node_execution_id = event.payload.get("node_execution_id") or event.payload.get("id")
         logger.warning(
-            "Slow ActiveMQ workflow log publish",
+            "Slow ActiveMQ workflow log publish "
+            "event_id=%s workflow_run_id=%s node_execution_id=%s destination=%s "
+            "total_ms=%.3f lock_wait_ms=%.3f send_ms=%.3f attempts=%s success=%s",
+            event.event_id,
+            workflow_run_id,
+            node_execution_id,
+            self._destination,
+            total_seconds * 1000,
+            lock_wait_seconds * 1000,
+            send_seconds * 1000,
+            attempts,
+            success,
             extra={
                 "event_id": event.event_id,
-                "workflow_run_id": event.payload.get("workflow_run_id"),
-                "node_execution_id": event.payload.get("node_execution_id") or event.payload.get("id"),
+                "workflow_run_id": workflow_run_id,
+                "node_execution_id": node_execution_id,
                 "destination": self._destination,
                 "total_ms": total_seconds * 1000,
                 "lock_wait_ms": lock_wait_seconds * 1000,

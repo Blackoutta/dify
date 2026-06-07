@@ -222,7 +222,13 @@ def test_activemq_publisher_logs_slow_publish_timing(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="core.workflow.log_publisher.activemq_publisher"):
         publisher.publish(event)
 
-    record = next(record for record in caplog.records if record.message == "Slow ActiveMQ workflow log publish")
+    record = next(record for record in caplog.records if "Slow ActiveMQ workflow log publish" in record.message)
+    assert "workflow_run_id=run-1" in record.message
+    assert "total_ms=700.000" in record.message
+    assert "lock_wait_ms=200.000" in record.message
+    assert "send_ms=500.000" in record.message
+    assert "attempts=1" in record.message
+    assert "success=True" in record.message
     assert record.workflow_run_id == "run-1"
     assert record.destination == "/queue/dify.workflow.logs"
     assert record.success is True
