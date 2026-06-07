@@ -92,26 +92,26 @@ class WorkflowResponseConverter:
     ) -> WorkflowFinishStreamResponse:
         created_by = None
         workflow_run = session.scalar(select(WorkflowRun).where(WorkflowRun.id == workflow_execution.id_))
-        assert workflow_run is not None
-        if workflow_run.created_by_role == CreatorUserRole.ACCOUNT:
-            stmt = select(Account).where(Account.id == workflow_run.created_by)
-            account = session.scalar(stmt)
-            if account:
-                created_by = {
-                    "id": account.id,
-                    "name": account.name,
-                    "email": account.email,
-                }
-        elif workflow_run.created_by_role == CreatorUserRole.END_USER:
-            stmt = select(EndUser).where(EndUser.id == workflow_run.created_by)
-            end_user = session.scalar(stmt)
-            if end_user:
-                created_by = {
-                    "id": end_user.id,
-                    "user": end_user.session_id,
-                }
-        else:
-            raise NotImplementedError(f"unknown created_by_role: {workflow_run.created_by_role}")
+        if workflow_run is not None:
+            if workflow_run.created_by_role == CreatorUserRole.ACCOUNT:
+                stmt = select(Account).where(Account.id == workflow_run.created_by)
+                account = session.scalar(stmt)
+                if account:
+                    created_by = {
+                        "id": account.id,
+                        "name": account.name,
+                        "email": account.email,
+                    }
+            elif workflow_run.created_by_role == CreatorUserRole.END_USER:
+                stmt = select(EndUser).where(EndUser.id == workflow_run.created_by)
+                end_user = session.scalar(stmt)
+                if end_user:
+                    created_by = {
+                        "id": end_user.id,
+                        "user": end_user.session_id,
+                    }
+            else:
+                raise NotImplementedError(f"unknown created_by_role: {workflow_run.created_by_role}")
 
         # Handle the case where finished_at is None by using current time as default
         finished_at_timestamp = (
