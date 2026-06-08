@@ -85,8 +85,7 @@ class WorkflowTool(Tool):
         """
         invoke the tool
         """
-        app = self._get_app(app_id=self.workflow_app_id)
-        workflow = self._get_workflow(app_id=self.workflow_app_id, version=self.version)
+        app, workflow = self._resolve_app_and_workflow()
 
         # transform the tool parameters
         tool_parameters, files = self._transform_args(tool_parameters=tool_parameters)
@@ -132,6 +131,27 @@ class WorkflowTool(Tool):
         yield self.create_text_message(json.dumps(outputs, ensure_ascii=False))
         yield self.create_json_message(outputs)
 
+    def _resolve_app_and_workflow(self) -> tuple[App, Workflow]:
+        app_key_present = "app" in self.workflow_entities
+        workflow_key_present = "workflow" in self.workflow_entities
+
+        app = self.workflow_entities.get("app")
+        workflow = self.workflow_entities.get("workflow")
+
+        if app_key_present and not isinstance(app, App):
+            raise ValueError("invalid cached workflow tool app")
+        if workflow_key_present and not isinstance(workflow, Workflow):
+            raise ValueError("invalid cached workflow tool workflow")
+
+        if not app_key_present:
+            app = self._get_app(app_id=self.workflow_app_id)
+        if not workflow_key_present:
+            workflow = self._get_workflow(app_id=self.workflow_app_id, version=self.version)
+
+        assert isinstance(app, App)
+        assert isinstance(workflow, Workflow)
+        return app, workflow
+
     def fork_tool_runtime(self, runtime: ToolRuntime) -> "WorkflowTool":
         """
         fork a new tool with metadata
@@ -139,11 +159,11 @@ class WorkflowTool(Tool):
         :return: the new tool
         """
         forked = self.__class__(
-            entity=self.entity.model_copy(),
+            entity=self.entity.model_copy(deep=True),
             runtime=runtime,
             workflow_app_id=self.workflow_app_id,
             workflow_as_tool_id=self.workflow_as_tool_id,
-            workflow_entities=self.workflow_entities,
+            workflow_entities=dict(self.workflow_entities),
             workflow_call_depth=self.workflow_call_depth,
             version=self.version,
             label=self.label,
