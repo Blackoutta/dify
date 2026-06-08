@@ -11,6 +11,7 @@ from core.tools.entities.api_entities import ToolApiEntity, ToolProviderApiEntit
 from core.tools.tool_label_manager import ToolLabelManager
 from core.tools.utils.workflow_configuration_sync import WorkflowToolConfigurationUtils
 from core.tools.workflow_as_tool.provider import WorkflowToolProviderController
+from core.tools.workflow_as_tool.provider_cache import invalidate_workflow_tool_provider_cache
 from core.tools.workflow_as_tool.tool import WorkflowTool
 from extensions.ext_database import db
 from models.model import App
@@ -83,6 +84,7 @@ class WorkflowToolManageService:
 
         db.session.add(workflow_tool_provider)
         db.session.commit()
+        invalidate_workflow_tool_provider_cache(tenant_id, workflow_tool_provider.id)
 
         if labels is not None:
             ToolLabelManager.update_tool_labels(
@@ -170,6 +172,7 @@ class WorkflowToolManageService:
 
         db.session.add(workflow_tool_provider)
         db.session.commit()
+        invalidate_workflow_tool_provider_cache(tenant_id, workflow_tool_provider.id)
 
         if labels is not None:
             ToolLabelManager.update_tool_labels(
@@ -229,6 +232,7 @@ class WorkflowToolManageService:
         ).delete()
 
         db.session.commit()
+        invalidate_workflow_tool_provider_cache(tenant_id, workflow_tool_id)
 
         return {"result": "success"}
 

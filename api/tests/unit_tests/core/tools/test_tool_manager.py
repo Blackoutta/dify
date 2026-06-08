@@ -7,7 +7,9 @@ from core.tools import tool_manager as tool_manager_module
 from core.tools.entities.tool_entities import ToolInvokeFrom, ToolProviderType
 from core.tools.errors import ToolProviderNotFoundError
 from core.tools.tool_manager import ToolManager
+from core.tools.workflow_as_tool import provider_cache
 from core.workflow.graph_engine.entities.workflow_tool_runtime_cache import WorkflowToolRuntimeCache
+from models.tools import WorkflowToolProvider
 
 
 def test_get_tool_runtime_workflow_provider_builds_controller_without_outer_lookup_session(monkeypatch):
@@ -192,6 +194,68 @@ def test_get_tool_runtime_workflow_cache_is_scoped_by_cache_object_and_key(monke
     assert c1.label != a1.label
     assert d1.label != a1.label
     assert loads["count"] == 4
+
+
+def test_generate_workflow_tool_icon_url_uses_provider_metadata_cache_without_db(monkeypatch):
+    metadata = provider_cache.WorkflowToolProviderCacheMetadata(
+        provider=WorkflowToolProvider(
+            id="provider-1",
+            tenant_id="tenant-1",
+            app_id="app-1",
+            user_id="account-1",
+            name="child",
+            label="Child",
+            description="desc",
+            icon='{"background":"#fff","content":"🤖"}',
+            version="1",
+            parameter_configuration="[]",
+        ),
+        app=SimpleNamespace(),
+        workflow=SimpleNamespace(),
+        user=None,
+    )
+    db_used = {"value": False}
+
+    monkeypatch.setattr(
+        "core.tools.tool_manager.provider_cache.get_or_load_workflow_tool_provider_metadata",
+        lambda tenant_id, provider_id, loader: metadata,
+    )
+    monkeypatch.setattr(
+        "core.tools.tool_manager.db.session.query",
+        lambda *args, **kwargs: db_used.__setitem__("value", True),
+    )
+
+    icon = ToolManager.generate_workflow_tool_icon_url("tenant-1", "provider-1")
+
+    assert icon == {"background": "#fff", "content": "🤖"}
+    assert db_used["value"] is False
+
+
+def test_generate_workflow_tool_icon_url_falls_back_to_db_on_cache_miss(monkeypatch):
+    workflow_provider = SimpleNamespace(icon='{"background":"#000","content":"🛠️"}')
+    queried = {"value": False}
+
+    class FakeQuery:
+        def filter(self, *criteria):
+            queried["value"] = True
+            return self
+
+        def first(self):
+            return workflow_provider
+
+    def cache_miss_loader(tenant_id, provider_id, loader):
+        return loader()
+
+    monkeypatch.setattr(
+        "core.tools.tool_manager.provider_cache.get_or_load_workflow_tool_provider_metadata",
+        cache_miss_loader,
+    )
+    monkeypatch.setattr("core.tools.tool_manager.db.session.query", lambda *args, **kwargs: FakeQuery())
+
+    icon = ToolManager.generate_workflow_tool_icon_url("tenant-1", "provider-1")
+
+    assert icon == {"background": "#000", "content": "🛠️"}
+    assert queried["value"] is True
 
 
 def test_get_tool_runtime_workflow_provider_missing_raises(monkeypatch):

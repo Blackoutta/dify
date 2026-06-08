@@ -17,6 +17,7 @@ from core.tools.mcp_tool.provider import MCPToolProviderController
 from core.tools.mcp_tool.tool import MCPTool
 from core.tools.plugin_tool.provider import PluginToolProviderController
 from core.tools.plugin_tool.tool import PluginTool
+from core.tools.workflow_as_tool import provider_cache
 from core.tools.workflow_as_tool.provider import WorkflowToolProviderController
 from core.workflow.entities.variable_pool import VariablePool
 from core.workflow.graph_engine.entities.workflow_tool_runtime_cache import (
@@ -835,6 +836,17 @@ class ToolManager:
     @classmethod
     def generate_workflow_tool_icon_url(cls, tenant_id: str, provider_id: str) -> dict:
         try:
+            metadata = provider_cache.get_or_load_workflow_tool_provider_metadata(
+                tenant_id,
+                provider_id,
+                lambda: WorkflowToolProviderController._load_metadata_from_db(provider_id, tenant_id=tenant_id),
+            )
+            icon: dict = json.loads(metadata.provider.icon)
+            return icon
+        except Exception:
+            logger.debug("Failed to load workflow tool icon from provider metadata cache", exc_info=True)
+
+        try:
             workflow_provider: WorkflowToolProvider | None = (
                 db.session.query(WorkflowToolProvider)
                 .filter(WorkflowToolProvider.tenant_id == tenant_id, WorkflowToolProvider.id == provider_id)
@@ -844,7 +856,7 @@ class ToolManager:
             if workflow_provider is None:
                 raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
 
-            icon: dict = json.loads(workflow_provider.icon)
+            icon = json.loads(workflow_provider.icon)
             return icon
         except Exception:
             return {"background": "#252525", "content": "\ud83d\ude01"}

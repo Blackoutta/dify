@@ -21,6 +21,7 @@ from core.tools.entities.tool_entities import (
     ToolProviderType,
 )
 from core.tools.utils.workflow_configuration_sync import WorkflowToolConfigurationUtils
+from core.tools.workflow_as_tool import provider_cache
 from core.tools.workflow_as_tool.tool import WorkflowTool
 from models.account import Account
 from models.model import App, AppMode
@@ -55,6 +56,20 @@ class WorkflowToolProviderController(ToolProviderController):
     def from_db_by_id(
         cls, provider_id: str, *, tenant_id: str | None = None
     ) -> "WorkflowToolProviderController":
+        if tenant_id is None:
+            return cls._from_metadata(cls._load_metadata_from_db(provider_id, tenant_id=None))
+
+        metadata = provider_cache.get_or_load_workflow_tool_provider_metadata(
+            tenant_id,
+            provider_id,
+            lambda: cls._load_metadata_from_db(provider_id, tenant_id=tenant_id),
+        )
+        return cls._from_metadata(metadata)
+
+    @classmethod
+    def _load_metadata_from_db(
+        cls, provider_id: str, *, tenant_id: str | None = None
+    ) -> provider_cache.WorkflowToolProviderCacheMetadata:
         with session_factory.create_session() as session, session.begin():
             provider_query = session.query(WorkflowToolProvider).where(WorkflowToolProvider.id == provider_id)
             if tenant_id is not None:
@@ -68,27 +83,65 @@ class WorkflowToolProviderController(ToolProviderController):
                 raise ValueError("app not found")
 
             user = session.get(Account, provider.user_id) if provider.user_id else None
-            controller = WorkflowToolProviderController(
-                entity=ToolProviderEntity(
-                    identity=ToolProviderIdentity(
-                        author=user.name if user else "",
-                        name=provider.label,
-                        label=I18nObject(en_US=provider.label, zh_Hans=provider.label),
-                        description=I18nObject(en_US=provider.description, zh_Hans=provider.description),
-                        icon=provider.icon,
-                    ),
-                    credentials_schema=[],
-                    plugin_id=None,
-                ),
-                provider_id=provider.id or "",
-            )
-            controller.tools = [controller._get_db_provider_tool(provider, app, session=session, user=user)]
+            workflow = cls._get_db_provider_workflow(provider, session=session)
 
+            return provider_cache.WorkflowToolProviderCacheMetadata(
+                provider=provider,
+                app=app,
+                workflow=workflow,
+                user=user,
+            )
+
+    @classmethod
+    def _from_metadata(
+        cls,
+        metadata: provider_cache.WorkflowToolProviderCacheMetadata,
+    ) -> "WorkflowToolProviderController":
+        controller = WorkflowToolProviderController(
+            entity=ToolProviderEntity(
+                identity=ToolProviderIdentity(
+                    author=metadata.user.name if metadata.user else "",
+                    name=metadata.provider.label,
+                    label=I18nObject(en_US=metadata.provider.label, zh_Hans=metadata.provider.label),
+                    description=I18nObject(
+                        en_US=metadata.provider.description,
+                        zh_Hans=metadata.provider.description,
+                    ),
+                    icon=metadata.provider.icon,
+                ),
+                credentials_schema=[],
+                plugin_id=None,
+            ),
+            provider_id=metadata.provider.id or "",
+        )
+        controller.tools = [controller._get_db_provider_tool_from_metadata(metadata)]
         return controller
+
+    @staticmethod
+    def _get_db_provider_workflow(db_provider: WorkflowToolProvider, *, session: Session) -> Workflow:
+        workflow: Workflow | None = (
+            session.query(Workflow)
+            .where(Workflow.app_id == db_provider.app_id, Workflow.version == db_provider.version)
+            .first()
+        )
+        if not workflow:
+            raise ValueError("workflow not found")
+        return workflow
 
     @property
     def provider_type(self) -> ToolProviderType:
         return ToolProviderType.WORKFLOW
+
+    def _get_db_provider_tool_from_metadata(
+        self,
+        metadata: provider_cache.WorkflowToolProviderCacheMetadata,
+    ) -> WorkflowTool:
+        return self._build_workflow_tool(
+            db_provider=metadata.provider,
+            app=metadata.app,
+            workflow=metadata.workflow,
+            user=metadata.user,
+        )
 
     def _get_db_provider_tool(
         self,
@@ -98,22 +151,17 @@ class WorkflowToolProviderController(ToolProviderController):
         session: Session,
         user: Account | None = None,
     ) -> WorkflowTool:
-        """
-        get db provider tool
-        :param db_provider: the db provider
-        :param app: the app
-        :return: the tool
-        """
-        workflow: Workflow | None = (
-            session.query(Workflow)
-            .where(Workflow.app_id == db_provider.app_id, Workflow.version == db_provider.version)
-            .first()
-        )
+        workflow = self._get_db_provider_workflow(db_provider, session=session)
+        return self._build_workflow_tool(db_provider=db_provider, app=app, workflow=workflow, user=user)
 
-        if not workflow:
-            raise ValueError("workflow not found")
-
-        # fetch start node
+    def _build_workflow_tool(
+        self,
+        *,
+        db_provider: WorkflowToolProvider,
+        app: App,
+        workflow: Workflow,
+        user: Account | None = None,
+    ) -> WorkflowTool:
         graph: Mapping = workflow.graph_dict
         features_dict: Mapping = workflow.features_dict
         features = WorkflowAppConfigManager.convert_features(config_dict=features_dict, app_mode=AppMode.WORKFLOW)

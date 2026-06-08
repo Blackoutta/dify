@@ -504,6 +504,28 @@ class WorkflowConfig(BaseSettings):
         default=5,
     )
 
+    WORKFLOW_TOOL_PROVIDER_CACHE_TTL: NonNegativeInt = Field(
+        description="Redis TTL in seconds for workflow tool provider metadata cache. Set to 0 to disable.",
+        default=300,
+    )
+
+    WORKFLOW_TOOL_PROVIDER_CACHE_LOCK_TIMEOUT: PositiveFloat = Field(
+        description="Redis lock lifetime in seconds for workflow tool provider metadata cache singleflight.",
+        default=3.0,
+    )
+
+    WORKFLOW_TOOL_PROVIDER_CACHE_WAIT_TIMEOUT: NonNegativeFloat = Field(
+        description="Maximum seconds to wait for another request to populate workflow tool provider metadata cache.",
+        default=0.2,
+    )
+
+    WORKFLOW_TOOL_PROVIDER_CACHE_WAIT_INTERVAL: PositiveFloat = Field(
+        description=(
+            "Seconds between Redis cache rechecks while waiting for workflow tool provider metadata cache fill."
+        ),
+        default=0.05,
+    )
+
     WORKFLOW_PARALLEL_DEPTH_LIMIT: PositiveInt = Field(
         description="Maximum allowed depth for nested parallel executions",
         default=3,
