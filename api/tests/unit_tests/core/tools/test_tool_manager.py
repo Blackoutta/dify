@@ -1,4 +1,3 @@
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -7,65 +6,36 @@ from core.app.entities.app_invoke_entities import InvokeFrom
 from core.tools.entities.tool_entities import ToolInvokeFrom, ToolProviderType
 from core.tools.errors import ToolProviderNotFoundError
 from core.tools.tool_manager import ToolManager
-from models.tools import WorkflowToolProvider
 
 
-def _workflow_provider():
-    return WorkflowToolProvider(
-        id="provider-1",
-        tenant_id="tenant-1",
-        app_id="app-1",
-        name="child_workflow",
-        label="Child Workflow",
-        description="Child workflow as tool",
-        icon="{}",
-        version="1",
-        parameter_configuration="[]",
-    )
-
-
-def test_get_tool_runtime_workflow_provider_lookup_uses_short_session(monkeypatch):
-    provider = _workflow_provider()
-    closed = {"value": False}
+def test_get_tool_runtime_workflow_provider_builds_controller_without_outer_lookup_session(monkeypatch):
     global_session_used = {"value": False}
-
-    class FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            closed["value"] = True
-
-        @contextmanager
-        def begin(self):
-            yield self
-
-        def query(self, model):
-            assert model is WorkflowToolProvider
-            return self
-
-        def filter(self, *criteria):
-            return self
-
-        def first(self):
-            return provider
+    create_session_used = {"value": False}
 
     class FakeWorkflowTool:
         def fork_tool_runtime(self, runtime):
             return SimpleNamespace(runtime=runtime, workflow_app_id="app-1")
 
-    get_tools_called_after_session_closed = {"value": False}
+    class FakeController:
+        provider_id = "provider-1"
 
-    def fake_get_tools(self, tenant_id):
+        def get_tools(self, tenant_id):
+            assert tenant_id == "tenant-1"
+            return [FakeWorkflowTool()]
+
+    def fake_create_session():
+        create_session_used["value"] = True
+        raise AssertionError("ToolManager must not open an outer workflow provider lookup session")
+
+    def fake_from_db_by_id(provider_id, *, tenant_id=None):
+        assert provider_id == "provider-1"
         assert tenant_id == "tenant-1"
-        assert self.provider_id == "provider-1"
-        get_tools_called_after_session_closed["value"] = closed["value"]
-        return [FakeWorkflowTool()]
+        return FakeController()
 
     def fail_if_nested_controller_conversion_runs(db_provider):
         raise AssertionError("workflow provider controller conversion must not run inside provider lookup session")
 
-    monkeypatch.setattr("core.tools.tool_manager.session_factory.create_session", lambda: FakeSession())
+    monkeypatch.setattr("core.tools.tool_manager.session_factory.create_session", fake_create_session)
     monkeypatch.setattr(
         "core.tools.tool_manager.db.session.query",
         lambda *args, **kwargs: global_session_used.__setitem__("value", True),
@@ -74,7 +44,7 @@ def test_get_tool_runtime_workflow_provider_lookup_uses_short_session(monkeypatc
         "core.tools.tool_manager.ToolTransformService.workflow_provider_to_controller",
         fail_if_nested_controller_conversion_runs,
     )
-    monkeypatch.setattr("core.tools.tool_manager.WorkflowToolProviderController.get_tools", fake_get_tools)
+    monkeypatch.setattr("core.tools.tool_manager.WorkflowToolProviderController.from_db_by_id", fake_from_db_by_id)
 
     runtime = ToolManager.get_tool_runtime(
         provider_type=ToolProviderType.WORKFLOW,
@@ -87,33 +57,15 @@ def test_get_tool_runtime_workflow_provider_lookup_uses_short_session(monkeypatc
 
     assert runtime.workflow_app_id == "app-1"
     assert runtime.runtime.tenant_id == "tenant-1"
-    assert closed["value"] is True
-    assert get_tools_called_after_session_closed["value"] is True
+    assert create_session_used["value"] is False
     assert global_session_used["value"] is False
 
 
 def test_get_tool_runtime_workflow_provider_missing_raises(monkeypatch):
-    class FakeSession:
-        def __enter__(self):
-            return self
+    def fake_from_db_by_id(provider_id, *, tenant_id=None):
+        raise ValueError("workflow provider not found")
 
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        @contextmanager
-        def begin(self):
-            yield self
-
-        def query(self, model):
-            return self
-
-        def filter(self, *criteria):
-            return self
-
-        def first(self):
-            return None
-
-    monkeypatch.setattr("core.tools.tool_manager.session_factory.create_session", lambda: FakeSession())
+    monkeypatch.setattr("core.tools.tool_manager.WorkflowToolProviderController.from_db_by_id", fake_from_db_by_id)
 
     with pytest.raises(ToolProviderNotFoundError, match="workflow provider provider-1 not found"):
         ToolManager.get_tool_runtime(

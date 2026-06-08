@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union, cast
 from yarl import URL
 
 import contexts
-from core.db.session_factory import session_factory
 from core.plugin.entities.plugin import ToolProviderID
 from core.plugin.impl.tool import PluginToolManager
 from core.tools.__base.tool_provider import ToolProviderController
@@ -44,8 +43,6 @@ from core.tools.entities.tool_entities import (
     ApiProviderAuthType,
     ToolInvokeFrom,
     ToolParameter,
-    ToolProviderEntity,
-    ToolProviderIdentity,
     ToolProviderType,
 )
 from core.tools.errors import ToolNotFoundError, ToolProviderNotFoundError
@@ -270,33 +267,12 @@ class ToolManager:
                 ),
             )
         elif provider_type == ToolProviderType.WORKFLOW:
-            with session_factory.create_session() as session, session.begin():
-                workflow_provider = (
-                    session.query(WorkflowToolProvider)
-                    .filter(WorkflowToolProvider.tenant_id == tenant_id, WorkflowToolProvider.id == provider_id)
-                    .first()
-                )
+            try:
+                controller = WorkflowToolProviderController.from_db_by_id(provider_id, tenant_id=tenant_id)
+            except ValueError as exc:
+                raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found") from exc
 
-                if workflow_provider is None:
-                    raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
-
-                provider_tenant_id = workflow_provider.tenant_id
-
-            controller = WorkflowToolProviderController(
-                entity=ToolProviderEntity(
-                    identity=ToolProviderIdentity(
-                        author="",
-                        name="",
-                        label=I18nObject(en_US="", zh_Hans=""),
-                        description=I18nObject(en_US="", zh_Hans=""),
-                        icon="{}",
-                    ),
-                    credentials_schema=[],
-                    plugin_id=None,
-                ),
-                provider_id=provider_id,
-            )
-            controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=provider_tenant_id)
+            controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=tenant_id)
             if controller_tools is None or len(controller_tools) == 0:
                 raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
 

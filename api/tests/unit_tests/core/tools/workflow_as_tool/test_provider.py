@@ -62,8 +62,6 @@ def test_from_db_reloads_provider_with_short_session(monkeypatch):
             yield self
 
         def get(self, model, primary_key):
-            if model is WorkflowToolProvider:
-                return provider
             if model is App:
                 return app
             if model is Account:
@@ -71,14 +69,18 @@ def test_from_db_reloads_provider_with_short_session(monkeypatch):
             return None
 
         def query(self, model):
-            assert model is Workflow
+            self.queried_model = model
             return self
 
         def where(self, *args):
             return self
 
         def first(self):
-            return workflow
+            if self.queried_model is WorkflowToolProvider:
+                return provider
+            if self.queried_model is Workflow:
+                return workflow
+            return None
 
     monkeypatch.setattr("core.tools.workflow_as_tool.provider.session_factory.create_session", lambda: FakeSession())
 

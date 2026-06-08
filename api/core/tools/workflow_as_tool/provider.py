@@ -47,8 +47,19 @@ class WorkflowToolProviderController(ToolProviderController):
 
     @classmethod
     def from_db(cls, db_provider: WorkflowToolProvider) -> "WorkflowToolProviderController":
+        if not db_provider.id:
+            raise ValueError("workflow provider not found")
+        return cls.from_db_by_id(db_provider.id)
+
+    @classmethod
+    def from_db_by_id(
+        cls, provider_id: str, *, tenant_id: str | None = None
+    ) -> "WorkflowToolProviderController":
         with session_factory.create_session() as session, session.begin():
-            provider = session.get(WorkflowToolProvider, db_provider.id) if db_provider.id else None
+            provider_query = session.query(WorkflowToolProvider).where(WorkflowToolProvider.id == provider_id)
+            if tenant_id is not None:
+                provider_query = provider_query.where(WorkflowToolProvider.tenant_id == tenant_id)
+            provider = provider_query.first()
             if not provider:
                 raise ValueError("workflow provider not found")
 
