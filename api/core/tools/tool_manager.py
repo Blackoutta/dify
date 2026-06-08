@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union, cast
 from yarl import URL
 
 import contexts
+from core.db.session_factory import session_factory
 from core.plugin.entities.plugin import ToolProviderID
 from core.plugin.impl.tool import PluginToolManager
 from core.tools.__base.tool_provider import ToolProviderController
@@ -19,6 +20,10 @@ from core.tools.plugin_tool.provider import PluginToolProviderController
 from core.tools.plugin_tool.tool import PluginTool
 from core.tools.workflow_as_tool.provider import WorkflowToolProviderController
 from core.workflow.entities.variable_pool import VariablePool
+from core.workflow.graph_engine.entities.workflow_tool_runtime_cache import (
+    WorkflowToolRuntimeCache,
+    WorkflowToolRuntimeCacheKey,
+)
 from services.tools.mcp_tools_mange_service import MCPToolManageService
 
 if TYPE_CHECKING:
@@ -160,6 +165,7 @@ class ToolManager:
         tenant_id: str,
         invoke_from: InvokeFrom = InvokeFrom.DEBUGGER,
         tool_invoke_from: ToolInvokeFrom = ToolInvokeFrom.AGENT,
+        workflow_tool_runtime_cache: WorkflowToolRuntimeCache | None = None,
     ) -> Union[BuiltinTool, PluginTool, ApiTool, WorkflowTool, MCPTool]:
         """
         get the tool runtime
@@ -267,18 +273,36 @@ class ToolManager:
                 ),
             )
         elif provider_type == ToolProviderType.WORKFLOW:
-            try:
-                controller = WorkflowToolProviderController.from_db_by_id(provider_id, tenant_id=tenant_id)
-            except ValueError as exc:
-                raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found") from exc
+            cache_key = WorkflowToolRuntimeCacheKey(
+                tenant_id=tenant_id,
+                provider_id=provider_id,
+                tool_name=tool_name,
+            )
+            workflow_tool_prototype: WorkflowTool | None = None
+            if workflow_tool_runtime_cache is not None:
+                cached = workflow_tool_runtime_cache.workflow_tools.get(cache_key)
+                if cached is not None:
+                    if not isinstance(cached, WorkflowTool):
+                        raise TypeError("cached workflow tool runtime prototype must be a WorkflowTool")
+                    workflow_tool_prototype = cached
 
-            controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=tenant_id)
-            if controller_tools is None or len(controller_tools) == 0:
-                raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
+            if workflow_tool_prototype is None:
+                try:
+                    controller = WorkflowToolProviderController.from_db_by_id(provider_id, tenant_id=tenant_id)
+                except ValueError as exc:
+                    raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found") from exc
+
+                controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=tenant_id)
+                if controller_tools is None or len(controller_tools) == 0:
+                    raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
+
+                workflow_tool_prototype = controller_tools[0]
+                if workflow_tool_runtime_cache is not None:
+                    workflow_tool_runtime_cache.workflow_tools[cache_key] = workflow_tool_prototype
 
             return cast(
                 WorkflowTool,
-                controller_tools[0].fork_tool_runtime(
+                workflow_tool_prototype.fork_tool_runtime(
                     runtime=ToolRuntime(
                         tenant_id=tenant_id,
                         credentials={},
@@ -345,6 +369,7 @@ class ToolManager:
         workflow_tool: "ToolEntity",
         invoke_from: InvokeFrom = InvokeFrom.DEBUGGER,
         variable_pool: Optional[VariablePool] = None,
+        workflow_tool_runtime_cache: WorkflowToolRuntimeCache | None = None,
     ) -> Tool:
         """
         get the workflow tool runtime
@@ -357,6 +382,7 @@ class ToolManager:
             tenant_id=tenant_id,
             invoke_from=invoke_from,
             tool_invoke_from=ToolInvokeFrom.WORKFLOW,
+            workflow_tool_runtime_cache=workflow_tool_runtime_cache,
         )
 
         parameters = tool_runtime.get_merged_runtime_parameters()
