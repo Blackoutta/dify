@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union, cast
 from yarl import URL
 
 import contexts
-from core.db.session_factory import session_factory
 from core.plugin.entities.plugin import ToolProviderID
 from core.plugin.impl.tool import PluginToolManager
 from core.tools.__base.tool_provider import ToolProviderController

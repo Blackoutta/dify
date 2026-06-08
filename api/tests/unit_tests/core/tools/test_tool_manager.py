@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.app.entities.app_invoke_entities import InvokeFrom
+from core.tools import tool_manager as tool_manager_module
 from core.tools.entities.tool_entities import ToolInvokeFrom, ToolProviderType
 from core.tools.errors import ToolProviderNotFoundError
 from core.tools.tool_manager import ToolManager
@@ -36,7 +37,12 @@ def test_get_tool_runtime_workflow_provider_builds_controller_without_outer_look
     def fail_if_nested_controller_conversion_runs(db_provider):
         raise AssertionError("workflow provider controller conversion must not run inside provider lookup session")
 
-    monkeypatch.setattr("core.tools.tool_manager.session_factory.create_session", fake_create_session)
+    monkeypatch.setattr(
+        tool_manager_module,
+        "session_factory",
+        SimpleNamespace(create_session=fake_create_session),
+        raising=False,
+    )
     monkeypatch.setattr(
         "core.tools.tool_manager.db.session.query",
         lambda *args, **kwargs: global_session_used.__setitem__("value", True),
