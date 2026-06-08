@@ -1,5 +1,3 @@
-import logging
-import time
 from collections.abc import Mapping
 from typing import Optional
 
@@ -29,8 +27,6 @@ from models.model import App, AppMode
 from models.tools import WorkflowToolProvider
 from models.workflow import Workflow
 
-logger = logging.getLogger(__name__)
-
 VARIABLE_TO_PARAMETER_TYPE_MAPPING = {
     VariableEntityType.TEXT_INPUT: ToolParameter.ToolParameterType.STRING,
     VariableEntityType.PARAGRAPH: ToolParameter.ToolParameterType.STRING,
@@ -59,35 +55,19 @@ class WorkflowToolProviderController(ToolProviderController):
     def from_db_by_id(
         cls, provider_id: str, *, tenant_id: str | None = None
     ) -> "WorkflowToolProviderController":
-        started_at = time.perf_counter()
-        controller: WorkflowToolProviderController
-
-        def log_stage(stage: str) -> None:
-            logger.warning(
-                "workflow tool provider load timing stage=%s provider_id=%s tenant_id=%s elapsed=%.3fs",
-                stage,
-                provider_id,
-                tenant_id,
-                time.perf_counter() - started_at,
-            )
-
-        log_stage("start")
         with session_factory.create_session() as session, session.begin():
             provider_query = session.query(WorkflowToolProvider).where(WorkflowToolProvider.id == provider_id)
             if tenant_id is not None:
                 provider_query = provider_query.where(WorkflowToolProvider.tenant_id == tenant_id)
             provider = provider_query.first()
-            log_stage("provider_query_done")
             if not provider:
                 raise ValueError("workflow provider not found")
 
             app = session.get(App, provider.app_id)
-            log_stage("app_query_done")
             if not app:
                 raise ValueError("app not found")
 
             user = session.get(Account, provider.user_id) if provider.user_id else None
-            log_stage("user_query_done")
             controller = WorkflowToolProviderController(
                 entity=ToolProviderEntity(
                     identity=ToolProviderIdentity(
@@ -103,9 +83,7 @@ class WorkflowToolProviderController(ToolProviderController):
                 provider_id=provider.id or "",
             )
             controller.tools = [controller._get_db_provider_tool(provider, app, session=session, user=user)]
-            log_stage("tool_build_done")
 
-        log_stage("session_closed")
         return controller
 
     @property
