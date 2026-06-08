@@ -54,9 +54,9 @@ sequenceDiagram
       PC->>DB: SELECT apps by app_id
       PC->>DB: SELECT accounts by user_id
       PC->>DB: SELECT workflows by app_id/version
-      note over PC,DB: short session closes; app/workflow stored on WorkflowTool.workflow_entities
+      note over PC,DB: short session closes and app/workflow stored on WorkflowTool.workflow_entities
 
-      TM->>PC: controller.get_tools(...)
+      TM->>PC: controller.get_tools returns prebuilt tools
       note over PC: current implementation normally returns prebuilt self.tools
     end
 
