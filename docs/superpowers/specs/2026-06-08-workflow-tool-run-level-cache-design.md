@@ -92,8 +92,10 @@ Add a dedicated cache object and attach it to `GraphRuntimeState`:
 ```python
 class WorkflowToolRuntimeCache(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    workflow_tools: dict[WorkflowToolRuntimeCacheKey, WorkflowTool] = Field(default_factory=dict)
+    workflow_tools: dict[WorkflowToolRuntimeCacheKey, Any] = Field(default_factory=dict)
 ```
+
+Avoid creating an import cycle from low-level workflow runtime entities back into the tools package. The cache type can live in a lightweight workflow runtime module and store values as `Any`, or use `TYPE_CHECKING` for `WorkflowTool` annotations. Runtime code that reads from the cache can validate/cast at the ToolManager boundary.
 
 The exact implementation can use a frozen dataclass, tuple key, or typed string key. The key must include:
 
@@ -111,7 +113,15 @@ tool_name
 workflow_tool_runtime_cache: WorkflowToolRuntimeCache = Field(default_factory=WorkflowToolRuntimeCache)
 ```
 
-This scope is intentionally one parent workflow run. A new parent workflow run creates a new `GraphRuntimeState` and therefore a new cache.
+This scope is intentionally one live parent workflow run. A new parent workflow run creates a new `GraphRuntimeState` and therefore a new cache object owned by that runtime state.
+
+Do not implement this as a process-level `workflow_run_id -> cache` registry. A global registry would require cleanup, can leak memory, and risks cross-request contamination. The boundary is object ownership, not global lookup:
+
+```text
+live parent workflow run GraphRuntimeState owns cache
+iteration/loop nested GraphRuntimeState receives same cache object
+ordinary child workflow run creates its own cache with its own GraphRuntimeState
+```
 
 Important propagation rule:
 
@@ -146,13 +156,16 @@ Do not cache as shared mutable invocation state:
 
 On cache hit, the caller must still call `fork_tool_runtime(ToolRuntime(...))`. `fork_tool_runtime()` must continue to create an invocation-local `WorkflowTool` object. If cached `workflow_entities` are reused by reference, `_invoke()` must treat app/workflow as read-only.
 
-`WorkflowTool.fork_tool_runtime()` must deep-copy tool metadata to avoid prototype pollution:
+`WorkflowTool.fork_tool_runtime()` must deep-copy tool metadata and copy the `workflow_entities` container to avoid prototype pollution:
 
 ```python
 entity=self.entity.model_copy(deep=True)
+workflow_entities=dict(self.workflow_entities)
 ```
 
 The current shallow `model_copy()` can share nested `ToolParameter` objects. Once a `WorkflowTool` becomes a longer-lived cache prototype, mutating parameters on one fork could affect later forks unless the entity is deep-copied.
+
+`workflow_entities=dict(self.workflow_entities)` intentionally keeps the detached `App` and `Workflow` object references shared as read-only metadata, but prevents accidental key-level mutation on a fork from changing the cached prototype's dict.
 
 ### Call flow with cache
 
@@ -231,10 +244,14 @@ File: `api/tests/unit_tests/core/tools/workflow_as_tool/test_tool.py`
 Add/adjust tests:
 
 1. `WorkflowTool._invoke()` uses `workflow_entities["app"]` and `workflow_entities["workflow"]` without calling `_get_app()` / `_get_workflow()`.
-2. `WorkflowTool._invoke()` falls back to `_get_app()` / `_get_workflow()` when `workflow_entities` is empty or missing keys.
-3. `fork_tool_runtime()` preserves `workflow_entities` while keeping trace context invocation-local.
-4. Present-but-invalid `workflow_entities` values fail without DB fallback.
-5. `fork_tool_runtime()` deep-copies `entity`, so mutating forked tool parameters does not affect the cached prototype or another fork.
+2. `WorkflowTool._invoke()` falls back to `_get_app()` / `_get_workflow()` when `workflow_entities` is empty.
+3. Partial missing entities load only the missing side:
+   - `{"app": app}` loads workflow only.
+   - `{"workflow": workflow}` loads app only.
+4. Present-but-invalid `workflow_entities` values fail without DB fallback, for example `{"app": None, "workflow": workflow}`.
+5. `fork_tool_runtime()` preserves `workflow_entities` while keeping trace context invocation-local.
+6. `fork_tool_runtime()` deep-copies `entity`, so mutating forked tool parameters does not affect the cached prototype or another fork.
+7. `fork_tool_runtime()` shallow-copies the `workflow_entities` dict container, so mutating keys on one fork does not affect the cached prototype or another fork.
 
 ### Unit tests for run-level cache object
 
@@ -335,6 +352,7 @@ same-run cache hit:           ~0 metadata SELECTs
 - First workflow-as-tool call no longer performs duplicate app/workflow reload inside `_invoke()` when entities are present.
 - Repeated same workflow tool calls in one parent workflow run avoid rebuilding provider/app/account/workflow metadata, including calls inside iteration/loop subgraphs.
 - Different parent `GraphRuntimeState` instances do not share cache.
+- There is no process-global `workflow_run_id -> cache` registry.
 - Ordinary child workflow runs do not inherit parent workflow tool runtime cache.
-- No runtime parameter, trace context, trace session id, parent node execution id, or mutated parameter schema leaks between cached invocations.
+- No runtime parameter, trace context, trace session id, parent node execution id, mutated parameter schema, or mutated `workflow_entities` dict keys leak between cached invocations.
 - Load test shows no long-lived `tool_workflow_providers` idle transaction cluster and no new workflow failures.
