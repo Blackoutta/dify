@@ -19,6 +19,83 @@ from models.enums import UserFrom
 from models.workflow import WorkflowType
 
 
+class CacheCaptureGraphEngine:
+    captured_graph_runtime_state = None
+
+    def __init__(self, *args, **kwargs):
+        self.__class__.captured_graph_runtime_state = kwargs["graph_runtime_state"]
+        self.graph_runtime_state = kwargs["graph_runtime_state"]
+
+    def run(self):
+        return iter(())
+
+
+def test_iteration_subgraph_reuses_parent_workflow_tool_runtime_cache(monkeypatch):
+    parent_state = GraphRuntimeState(
+        variable_pool=VariablePool(system_variables={}, user_inputs={}),
+        start_at=time.perf_counter(),
+    )
+    parent_state.variable_pool.add(["iteration-1", "items"], ["a"])
+
+    graph_config = {
+        "nodes": [
+            {
+                "id": "iteration-1",
+                "data": {
+                    "title": "iteration",
+                    "type": "iteration",
+                    "iterator_selector": ["iteration-1", "items"],
+                    "output_selector": ["inner", "output"],
+                    "output_type": "array[string]",
+                    "start_node_id": "inner",
+                    "startNodeType": "template-transform",
+                },
+            },
+            {
+                "id": "inner",
+                "data": {
+                    "title": "inner",
+                    "type": "template-transform",
+                    "iteration_id": "iteration-1",
+                    "template": "{{ item }}",
+                    "variables": [{"variable": "item", "value_selector": ["iteration-1", "item"]}],
+                },
+            },
+        ],
+        "edges": [],
+    }
+    graph = Graph.init(graph_config=graph_config, root_node_id="iteration-1")
+    init_params = GraphInitParams(
+        tenant_id="1",
+        app_id="1",
+        workflow_type=WorkflowType.CHAT,
+        workflow_id="1",
+        graph_config=graph_config,
+        user_id="1",
+        user_from=UserFrom.ACCOUNT,
+        invoke_from=InvokeFrom.DEBUGGER,
+        call_depth=0,
+    )
+    iteration_node = IterationNode(
+        id="iteration-1",
+        config=graph_config["nodes"][0],
+        graph_init_params=init_params,
+        graph=graph,
+        graph_runtime_state=parent_state,
+    )
+
+    CacheCaptureGraphEngine.captured_graph_runtime_state = None
+    monkeypatch.setattr("core.workflow.graph_engine.graph_engine.GraphEngine", CacheCaptureGraphEngine)
+
+    list(iteration_node._run())
+
+    assert CacheCaptureGraphEngine.captured_graph_runtime_state is not None
+    assert (
+        CacheCaptureGraphEngine.captured_graph_runtime_state.workflow_tool_runtime_cache
+        is parent_state.workflow_tool_runtime_cache
+    )
+
+
 def test_run():
     graph_config = {
         "edges": [
