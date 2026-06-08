@@ -63,21 +63,26 @@ workflow_entities={
 }
 ```
 
-`WorkflowTool._invoke()` should use those entities when present and only fall back to `_get_app()` / `_get_workflow()` when they are missing:
+`WorkflowTool._invoke()` should use those entities when present and only fall back to `_get_app()` / `_get_workflow()` when the entity keys are absent:
 
 ```text
-if workflow_entities has app and workflow:
+if workflow_entities lacks either "app" or "workflow":
+  load the missing data with short sessions as today
+elif workflow_entities["app"] is an App and workflow_entities["workflow"] is a Workflow:
   use them
 else:
-  load with short sessions as today
+  fail immediately; do not silently fall back
 ```
 
-This removes two duplicate SELECTs per workflow-as-tool invocation while preserving compatibility with older or test-built `WorkflowTool` objects.
+The implementation should use `isinstance(app, App)` and `isinstance(workflow, Workflow)`, or an equivalent minimal type/attribute validation. A missing key preserves backward compatibility with older or test-built `WorkflowTool` objects. A present-but-`None` or present-but-wrong-type value indicates a malformed cached prototype and should fail rather than hiding cache corruption with extra DB reads.
+
+This removes two duplicate SELECTs per workflow-as-tool invocation while preserving compatibility with callers that do not attach `workflow_entities`.
 
 Acceptance criteria:
 
-- A tool with `workflow_entities["app"]` and `workflow_entities["workflow"]` invokes the child generator without calling `_get_app()` or `_get_workflow()`.
-- A tool without cached entities still loads app/workflow via existing short-session methods.
+- A tool with valid `workflow_entities["app"]` and `workflow_entities["workflow"]` invokes the child generator without calling `_get_app()` or `_get_workflow()`.
+- A tool missing either cached entity key still loads app/workflow via existing short-session methods.
+- A tool with present-but-invalid cached entity values fails without fallback.
 - Cached app/workflow are not mutated by `_invoke()`.
 
 ### Phase 2: Add run-level workflow tool runtime cache
@@ -106,7 +111,14 @@ tool_name
 workflow_tool_runtime_cache: WorkflowToolRuntimeCache = Field(default_factory=WorkflowToolRuntimeCache)
 ```
 
-This scope is intentionally one graph run. A new parent workflow run creates a new `GraphRuntimeState` and therefore a new cache. Child workflow runs get their own `GraphRuntimeState`; they do not inherit the parent cache unless explicitly passed in the future.
+This scope is intentionally one parent workflow run. A new parent workflow run creates a new `GraphRuntimeState` and therefore a new cache.
+
+Important propagation rule:
+
+- Ordinary child workflow runs invoked through workflow-as-tool must get their own cache and must not inherit the parent cache.
+- Iteration and loop subgraphs that are still part of the same parent workflow run should inherit the parent `workflow_tool_runtime_cache` when they construct a nested `GraphRuntimeState`.
+
+Current `iteration_node.py` and `loop_node.py` construct new `GraphRuntimeState(variable_pool=..., start_at=...)`. Implementation must pass through the parent cache there, otherwise workflow tools repeated inside iteration/loop subgraphs will miss the run-level cache even though they are part of the same parent workflow run.
 
 ### Cache data model
 
@@ -133,6 +145,14 @@ Do not cache as shared mutable invocation state:
 - per-invocation files or transformed inputs
 
 On cache hit, the caller must still call `fork_tool_runtime(ToolRuntime(...))`. `fork_tool_runtime()` must continue to create an invocation-local `WorkflowTool` object. If cached `workflow_entities` are reused by reference, `_invoke()` must treat app/workflow as read-only.
+
+`WorkflowTool.fork_tool_runtime()` must deep-copy tool metadata to avoid prototype pollution:
+
+```python
+entity=self.entity.model_copy(deep=True)
+```
+
+The current shallow `model_copy()` can share nested `ToolParameter` objects. Once a `WorkflowTool` becomes a longer-lived cache prototype, mutating parameters on one fork could affect later forks unless the entity is deep-copied.
 
 ### Call flow with cache
 
@@ -190,7 +210,8 @@ Recommendation: start with the simple dict. The cached value is immutable-by-con
 Cache isolation requirements:
 
 - Different parent workflow runs must not share cached tools.
-- A child workflow run must not see the parent run cache unless future work explicitly passes it.
+- An ordinary child workflow run must not see the parent run cache unless future work explicitly passes it.
+- Iteration and loop subgraphs within the same parent workflow run must share the parent cache.
 - Different tenants must never share cache entries.
 - Different provider ids or tool names must not collide.
 
@@ -199,7 +220,7 @@ Cache isolation requirements:
 - Cache miss load errors should behave exactly like current metadata load errors.
 - Do not cache failures or negative lookups.
 - If cached prototype is malformed, fail normally rather than falling back silently, because malformed cache indicates a programming error.
-- `WorkflowTool._invoke()` fallback to DB should only apply when entities are absent, not when present-but-invalid.
+- `WorkflowTool._invoke()` fallback to DB should only apply when entity keys are absent, not when keys are present-but-`None` or present-but-wrong-type.
 
 ## Testing Strategy
 
@@ -212,6 +233,8 @@ Add/adjust tests:
 1. `WorkflowTool._invoke()` uses `workflow_entities["app"]` and `workflow_entities["workflow"]` without calling `_get_app()` / `_get_workflow()`.
 2. `WorkflowTool._invoke()` falls back to `_get_app()` / `_get_workflow()` when `workflow_entities` is empty or missing keys.
 3. `fork_tool_runtime()` preserves `workflow_entities` while keeping trace context invocation-local.
+4. Present-but-invalid `workflow_entities` values fail without DB fallback.
+5. `fork_tool_runtime()` deep-copies `entity`, so mutating forked tool parameters does not affect the cached prototype or another fork.
 
 ### Unit tests for run-level cache object
 
@@ -242,6 +265,20 @@ Tests:
 
 1. `ToolNode._run()` passes `graph_runtime_state.workflow_tool_runtime_cache` to `ToolManager.get_workflow_tool_runtime()`.
 2. Existing parent trace context and trace session id behavior remains unchanged.
+3. Cache hit returns a forked invocation whose `_parent_trace_context` and `_trace_session_id` are set only on the fork, while the cached prototype remains unset.
+
+### Unit tests for iteration/loop cache propagation
+
+Files:
+
+- `api/tests/unit_tests/core/workflow/nodes/iteration/test_iteration_node.py` or nearest existing iteration-node test file.
+- `api/tests/unit_tests/core/workflow/nodes/loop/test_loop_node.py` or nearest existing loop-node test file.
+
+Tests:
+
+1. Iteration subgraph `GraphRuntimeState` receives the same `workflow_tool_runtime_cache` object as the parent runtime state.
+2. Loop subgraph `GraphRuntimeState` receives the same `workflow_tool_runtime_cache` object as the parent runtime state.
+3. Ordinary workflow-as-tool child workflow generation does not inherit the parent cache.
 
 ### Pressure-test verification
 
@@ -296,7 +333,8 @@ same-run cache hit:           ~0 metadata SELECTs
 - Focused unit tests pass.
 - `tests/unit_tests/core/tools`, workflow-as-tool tests, and tool node tests pass.
 - First workflow-as-tool call no longer performs duplicate app/workflow reload inside `_invoke()` when entities are present.
-- Repeated same workflow tool calls in one parent `GraphRuntimeState` avoid rebuilding provider/app/account/workflow metadata.
+- Repeated same workflow tool calls in one parent workflow run avoid rebuilding provider/app/account/workflow metadata, including calls inside iteration/loop subgraphs.
 - Different parent `GraphRuntimeState` instances do not share cache.
-- No runtime parameter, trace context, trace session id, or parent node execution id leaks between cached invocations.
+- Ordinary child workflow runs do not inherit parent workflow tool runtime cache.
+- No runtime parameter, trace context, trace session id, parent node execution id, or mutated parameter schema leaks between cached invocations.
 - Load test shows no long-lived `tool_workflow_providers` idle transaction cluster and no new workflow failures.
