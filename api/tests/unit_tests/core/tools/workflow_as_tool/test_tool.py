@@ -428,3 +428,24 @@ def test_workflow_tool_fork_deep_copies_entity_parameters_and_copies_workflow_en
     assert prototype.workflow_entities["app"] is app
     assert fork2.workflow_entities["app"] is app
     assert fork1.workflow_entities is not prototype.workflow_entities
+
+
+def test_workflow_tool_child_generation_does_not_receive_parent_workflow_tool_cache(monkeypatch):
+    tool = _workflow_tool_for_session_tests()
+    app = App(id="app-1", tenant_id="tenant-1", mode="workflow", name="Child")
+    workflow = Workflow(id="workflow-1", app_id="app-1", version="1", graph="{}", features="{}")
+    tool.workflow_entities = {"app": app, "workflow": workflow}
+    captured = {}
+
+    monkeypatch.setattr("core.tools.workflow_as_tool.tool.current_user", object())
+
+    def fake_generate(self, **kwargs):
+        captured.update(kwargs)
+        return {"data": {"outputs": {"answer": "ok"}}}
+
+    monkeypatch.setattr("core.app.apps.workflow.app_generator.WorkflowAppGenerator.generate", fake_generate)
+
+    list(tool.invoke("user-1", {}))
+
+    assert "workflow_tool_runtime_cache" not in captured
+    assert "workflow_tool_runtime_cache" not in captured["args"]
