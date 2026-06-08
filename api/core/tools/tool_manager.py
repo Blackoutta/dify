@@ -44,6 +44,8 @@ from core.tools.entities.tool_entities import (
     ApiProviderAuthType,
     ToolInvokeFrom,
     ToolParameter,
+    ToolProviderEntity,
+    ToolProviderIdentity,
     ToolProviderType,
 )
 from core.tools.errors import ToolNotFoundError, ToolProviderNotFoundError
@@ -278,9 +280,22 @@ class ToolManager:
                 if workflow_provider is None:
                     raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
 
-                controller = ToolTransformService.workflow_provider_to_controller(db_provider=workflow_provider)
                 provider_tenant_id = workflow_provider.tenant_id
 
+            controller = WorkflowToolProviderController(
+                entity=ToolProviderEntity(
+                    identity=ToolProviderIdentity(
+                        author="",
+                        name="",
+                        label=I18nObject(en_US="", zh_Hans=""),
+                        description=I18nObject(en_US="", zh_Hans=""),
+                        icon="{}",
+                    ),
+                    credentials_schema=[],
+                    plugin_id=None,
+                ),
+                provider_id=provider_id,
+            )
             controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=provider_tenant_id)
             if controller_tools is None or len(controller_tools) == 0:
                 raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")

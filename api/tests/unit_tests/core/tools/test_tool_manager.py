@@ -54,10 +54,16 @@ def test_get_tool_runtime_workflow_provider_lookup_uses_short_session(monkeypatc
         def fork_tool_runtime(self, runtime):
             return SimpleNamespace(runtime=runtime, workflow_app_id="app-1")
 
-    class FakeController:
-        def get_tools(self, tenant_id):
-            assert tenant_id == "tenant-1"
-            return [FakeWorkflowTool()]
+    get_tools_called_after_session_closed = {"value": False}
+
+    def fake_get_tools(self, tenant_id):
+        assert tenant_id == "tenant-1"
+        assert self.provider_id == "provider-1"
+        get_tools_called_after_session_closed["value"] = closed["value"]
+        return [FakeWorkflowTool()]
+
+    def fail_if_nested_controller_conversion_runs(db_provider):
+        raise AssertionError("workflow provider controller conversion must not run inside provider lookup session")
 
     monkeypatch.setattr("core.tools.tool_manager.session_factory.create_session", lambda: FakeSession())
     monkeypatch.setattr(
@@ -66,8 +72,9 @@ def test_get_tool_runtime_workflow_provider_lookup_uses_short_session(monkeypatc
     )
     monkeypatch.setattr(
         "core.tools.tool_manager.ToolTransformService.workflow_provider_to_controller",
-        lambda db_provider: FakeController(),
+        fail_if_nested_controller_conversion_runs,
     )
+    monkeypatch.setattr("core.tools.tool_manager.WorkflowToolProviderController.get_tools", fake_get_tools)
 
     runtime = ToolManager.get_tool_runtime(
         provider_type=ToolProviderType.WORKFLOW,
@@ -81,6 +88,7 @@ def test_get_tool_runtime_workflow_provider_lookup_uses_short_session(monkeypatc
     assert runtime.workflow_app_id == "app-1"
     assert runtime.runtime.tenant_id == "tenant-1"
     assert closed["value"] is True
+    assert get_tools_called_after_session_closed["value"] is True
     assert global_session_used["value"] is False
 
 
