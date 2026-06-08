@@ -61,52 +61,67 @@ class WorkflowToolProviderController(ToolProviderController):
     ) -> "WorkflowToolProviderController":
         started_at = time.perf_counter()
         controller: WorkflowToolProviderController
+        timing_marks: list[tuple[str, float]] = []
 
-        def log_stage(stage: str) -> None:
+        def mark_stage(stage: str) -> None:
+            timing_marks.append((stage, time.perf_counter() - started_at))
+
+        def format_timing_marks() -> str:
+            return ",".join(f"{stage}:{elapsed:.3f}s" for stage, elapsed in timing_marks)
+
+        mark_stage("start")
+        try:
+            with session_factory.create_session() as session, session.begin():
+                provider_query = session.query(WorkflowToolProvider).where(WorkflowToolProvider.id == provider_id)
+                if tenant_id is not None:
+                    provider_query = provider_query.where(WorkflowToolProvider.tenant_id == tenant_id)
+                provider = provider_query.first()
+                mark_stage("provider_query_done")
+                if not provider:
+                    raise ValueError("workflow provider not found")
+
+                app = session.get(App, provider.app_id)
+                mark_stage("app_query_done")
+                if not app:
+                    raise ValueError("app not found")
+
+                user = session.get(Account, provider.user_id) if provider.user_id else None
+                mark_stage("user_query_done")
+                controller = WorkflowToolProviderController(
+                    entity=ToolProviderEntity(
+                        identity=ToolProviderIdentity(
+                            author=user.name if user else "",
+                            name=provider.label,
+                            label=I18nObject(en_US=provider.label, zh_Hans=provider.label),
+                            description=I18nObject(en_US=provider.description, zh_Hans=provider.description),
+                            icon=provider.icon,
+                        ),
+                        credentials_schema=[],
+                        plugin_id=None,
+                    ),
+                    provider_id=provider.id or "",
+                )
+                controller.tools = [controller._get_db_provider_tool(provider, app, session=session, user=user)]
+                mark_stage("tool_build_done")
+
+            mark_stage("session_closed")
             logger.warning(
-                "workflow tool provider load timing stage=%s provider_id=%s tenant_id=%s elapsed=%.3fs",
-                stage,
+                "workflow tool provider load timing provider_id=%s tenant_id=%s total=%.3fs stages=%s",
                 provider_id,
                 tenant_id,
                 time.perf_counter() - started_at,
+                format_timing_marks(),
             )
-
-        log_stage("start")
-        with session_factory.create_session() as session, session.begin():
-            provider_query = session.query(WorkflowToolProvider).where(WorkflowToolProvider.id == provider_id)
-            if tenant_id is not None:
-                provider_query = provider_query.where(WorkflowToolProvider.tenant_id == tenant_id)
-            provider = provider_query.first()
-            log_stage("provider_query_done")
-            if not provider:
-                raise ValueError("workflow provider not found")
-
-            app = session.get(App, provider.app_id)
-            log_stage("app_query_done")
-            if not app:
-                raise ValueError("app not found")
-
-            user = session.get(Account, provider.user_id) if provider.user_id else None
-            log_stage("user_query_done")
-            controller = WorkflowToolProviderController(
-                entity=ToolProviderEntity(
-                    identity=ToolProviderIdentity(
-                        author=user.name if user else "",
-                        name=provider.label,
-                        label=I18nObject(en_US=provider.label, zh_Hans=provider.label),
-                        description=I18nObject(en_US=provider.description, zh_Hans=provider.description),
-                        icon=provider.icon,
-                    ),
-                    credentials_schema=[],
-                    plugin_id=None,
-                ),
-                provider_id=provider.id or "",
+            return controller
+        except Exception:
+            logger.exception(
+                "workflow tool provider load failed provider_id=%s tenant_id=%s total=%.3fs stages=%s",
+                provider_id,
+                tenant_id,
+                time.perf_counter() - started_at,
+                format_timing_marks(),
             )
-            controller.tools = [controller._get_db_provider_tool(provider, app, session=session, user=user)]
-            log_stage("tool_build_done")
-
-        log_stage("session_closed")
-        return controller
+            raise
 
     @property
     def provider_type(self) -> ToolProviderType:
