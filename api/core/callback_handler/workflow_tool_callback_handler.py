@@ -1,9 +1,12 @@
+import logging
 from collections.abc import Generator, Iterable, Mapping
 from typing import Any, Optional
 
-from core.callback_handler.agent_tool_callback_handler import DifyAgentCallbackHandler, print_text
+from core.callback_handler.agent_tool_callback_handler import DifyAgentCallbackHandler
 from core.ops.ops_trace_manager import TraceQueueManager
 from core.tools.entities.tool_entities import ToolInvokeMessage
+
+logger = logging.getLogger(__name__)
 
 
 class DifyWorkflowCallbackHandler(DifyAgentCallbackHandler):
@@ -19,8 +22,9 @@ class DifyWorkflowCallbackHandler(DifyAgentCallbackHandler):
         trace_manager: Optional[TraceQueueManager] = None,
     ) -> Generator[ToolInvokeMessage, None, None]:
         for tool_output in tool_outputs:
-            print_text("\n[on_tool_execution]\n", color=self.color)
-            print_text("Tool: " + tool_name + "\n", color=self.color)
-            print_text("Outputs: " + tool_output.model_dump_json()[:1000] + "\n", color=self.color)
-            print_text("\n")
+            logger.debug(
+                "[on_tool_execution]\nTool: %s\nOutputs: %s",
+                tool_name,
+                tool_output.model_dump_json()[:1000],
+            )
             yield tool_output
