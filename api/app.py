@@ -1,5 +1,7 @@
 import os
+import signal
 import sys
+from pathlib import Path
 
 
 def is_db_command():
@@ -31,6 +33,18 @@ else:
         import psycogreen.gevent  # type: ignore
 
         psycogreen.gevent.patch_psycopg()
+
+        if os.environ.get("DIFY_ENABLE_GEVENT_RUN_INFO", "0").lower() in {"1", "true", "yes"}:
+            from gevent.util import format_run_info
+
+            def dump_gevent_run_info(signum, frame):  # type: ignore[no-untyped-def]
+                del signum, frame
+                output_path = Path(f"/tmp/dify-gevent-run-info-{os.getpid()}.log")
+                run_info = format_run_info()
+                content = run_info if isinstance(run_info, str) else "\n".join(run_info)
+                output_path.write_text(content)
+
+            signal.signal(signal.SIGUSR2, dump_gevent_run_info)
 
     from app_factory import create_app
 
