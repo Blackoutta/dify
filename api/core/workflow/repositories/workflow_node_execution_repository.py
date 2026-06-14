@@ -82,6 +82,14 @@ class WorkflowNodeExecutionRepository(Protocol):
         """
         ...
 
+    def get_cached_executions_by_workflow_run(self, workflow_run_id: str) -> Sequence[WorkflowNodeExecution]:
+        """Return same-repository cached node executions for a workflow run."""
+        ...
+
+    def to_trace_snapshot(self, execution: WorkflowNodeExecution) -> dict:
+        """Return a JSON-compatible node trace snapshot for the execution."""
+        ...
+
     def clear(self) -> None:
         """
         Clear all NodeExecution records based on implementation-specific criteria.

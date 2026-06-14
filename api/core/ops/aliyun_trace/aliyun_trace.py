@@ -234,6 +234,10 @@ class AliyunDataTrace(BaseTraceInstance):
         self.trace_client.add_span(tool_span)
 
     def get_workflow_node_executions(self, trace_info: WorkflowTraceInfo) -> Sequence[WorkflowNodeExecution]:
+        workflow_node_executions = workflow_node_executions_from_snapshots(trace_info)
+        if workflow_node_executions is not None:
+            return workflow_node_executions
+
         # through workflow_run_id get all_nodes_execution using repository
         session_factory = sessionmaker(bind=db.engine)
         # Find the app's creator account

@@ -19,6 +19,7 @@ from core.workflow.entities.workflow_node_execution import (
     WorkflowNodeExecutionMetadataKey,
     WorkflowNodeExecutionStatus,
 )
+from core.workflow.log_publisher.entities import WorkflowLogEventType, WorkflowLogWriteMode
 from core.workflow.nodes.enums import NodeType
 from core.workflow.repositories.workflow_node_execution_repository import OrderConfig
 from models.account import Account, Tenant
@@ -310,6 +311,68 @@ def test_update_via_save(repository, session):
 
     # Assert session.merge was called (for updates)
     session_obj.merge.assert_called_once_with(execution)
+
+
+def _create_domain_node_execution(
+    *,
+    id="record-1",
+    node_execution_id="node-exec-1",
+    status=WorkflowNodeExecutionStatus.RUNNING,
+):
+    return WorkflowNodeExecution(
+        id=id,
+        node_execution_id=node_execution_id,
+        workflow_id="workflow-1",
+        workflow_execution_id="run-1",
+        index=1,
+        predecessor_node_id="start",
+        node_id="llm",
+        node_type=NodeType.LLM,
+        title="LLM",
+        inputs={"query": "hello"},
+        process_data={"prompts": []},
+        outputs={},
+        status=status,
+        metadata={},
+        created_at=datetime(2026, 6, 6, 1, 2, 3),
+    )
+
+
+def test_async_save_publishes_node_execution_and_updates_cache(repository, session):
+    _, session_factory = session
+    publisher = MagicMock()
+    repository._write_mode = WorkflowLogWriteMode.ASYNC
+    repository._workflow_log_publisher = publisher
+    execution = _create_domain_node_execution(status=WorkflowNodeExecutionStatus.RUNNING)
+
+    repository.save(execution)
+
+    publisher.publish.assert_called_once()
+    event = publisher.publish.call_args.args[0]
+    assert event.event_type == WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT
+    assert event.payload["workflow_run_id"] == execution.workflow_execution_id
+    assert event.payload["triggered_from"] == WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN
+    cached_execution = repository.get_by_node_execution_id(execution.node_execution_id)
+    assert cached_execution.node_execution_id == execution.node_execution_id
+    session_factory.assert_not_called()
+
+
+def test_async_get_running_executions_returns_cached_running_nodes(repository):
+    repository._write_mode = WorkflowLogWriteMode.ASYNC
+    repository._workflow_log_publisher = MagicMock()
+    running = _create_domain_node_execution(status=WorkflowNodeExecutionStatus.RUNNING)
+    succeeded = _create_domain_node_execution(
+        id="record-2",
+        node_execution_id="node-exec-2",
+        status=WorkflowNodeExecutionStatus.SUCCEEDED,
+    )
+
+    repository.save(running)
+    repository.save(succeeded)
+
+    results = repository.get_running_executions(running.workflow_execution_id)
+
+    assert [item.node_execution_id for item in results] == [running.node_execution_id]
 
 
 def test_clear(repository, session, mocker: MockerFixture):

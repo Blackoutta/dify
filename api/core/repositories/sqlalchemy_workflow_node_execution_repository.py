@@ -2,6 +2,7 @@
 SQLAlchemy implementation of the WorkflowNodeExecutionRepository.
 """
 
+import datetime
 import json
 import logging
 from collections.abc import Sequence
@@ -18,6 +19,13 @@ from core.workflow.entities.workflow_node_execution import (
     WorkflowNodeExecutionMetadataKey,
     WorkflowNodeExecutionStatus,
 )
+from core.workflow.log_publisher.entities import (
+    NodeExecutionTraceSnapshot,
+    WorkflowLogEvent,
+    WorkflowLogEventType,
+    WorkflowLogWriteMode,
+)
+from core.workflow.log_publisher.publisher import NoopWorkflowLogPublisher, WorkflowLogPublisher
 from core.workflow.nodes.enums import NodeType
 from core.workflow.repositories.workflow_node_execution_repository import OrderConfig, WorkflowNodeExecutionRepository
 from core.workflow.workflow_type_encoder import WorkflowRuntimeTypeConverter
@@ -51,6 +59,8 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         user: Union[Account, EndUser],
         app_id: Optional[str],
         triggered_from: Optional[WorkflowNodeExecutionTriggeredFrom],
+        write_mode: WorkflowLogWriteMode = WorkflowLogWriteMode.SYNC,
+        workflow_log_publisher: WorkflowLogPublisher | None = None,
     ):
         """
         Initialize the repository with a SQLAlchemy sessionmaker or engine and context information.
@@ -86,6 +96,9 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
 
         # Determine user role based on user type
         self._creator_user_role = CreatorUserRole.ACCOUNT if isinstance(user, Account) else CreatorUserRole.END_USER
+
+        self._write_mode = write_mode
+        self._workflow_log_publisher = workflow_log_publisher or NoopWorkflowLogPublisher()
 
         # Initialize in-memory cache for node executions
         # Key: node_execution_id, Value: WorkflowNodeExecution (DB model)
@@ -187,6 +200,33 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         db_model.finished_at = domain_model.finished_at
         return db_model
 
+    def _node_execution_payload(self, db_model: WorkflowNodeExecutionModel) -> dict:
+        return {
+            "id": db_model.id,
+            "tenant_id": db_model.tenant_id,
+            "app_id": db_model.app_id,
+            "workflow_id": db_model.workflow_id,
+            "workflow_run_id": db_model.workflow_run_id,
+            "triggered_from": db_model.triggered_from,
+            "node_execution_id": db_model.node_execution_id,
+            "node_id": db_model.node_id,
+            "node_type": db_model.node_type,
+            "title": db_model.title,
+            "index": db_model.index,
+            "predecessor_node_id": db_model.predecessor_node_id,
+            "inputs": db_model.inputs_dict,
+            "process_data": db_model.process_data_dict,
+            "outputs": db_model.outputs_dict,
+            "status": db_model.status,
+            "error": db_model.error,
+            "elapsed_time": db_model.elapsed_time,
+            "execution_metadata": db_model.execution_metadata_dict,
+            "created_by_role": db_model.created_by_role,
+            "created_by": db_model.created_by,
+            "created_at": db_model.created_at,
+            "finished_at": db_model.finished_at,
+        }
+
     def save(self, execution: WorkflowNodeExecution) -> None:
         """
         Save or update a NodeExecution domain entity to the database.
@@ -205,6 +245,28 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         """
         # Convert domain model to database model using tenant context and other attributes
         db_model = self.to_db_model(execution)
+
+        if self._write_mode == WorkflowLogWriteMode.ASYNC:
+            try:
+                self._workflow_log_publisher.publish(
+                    WorkflowLogEvent.create(
+                        event_type=WorkflowLogEventType.WORKFLOW_NODE_EXECUTION_UPSERT,
+                        payload=self._node_execution_payload(db_model),
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to publish workflow node execution log event",
+                    exc_info=True,
+                    extra={
+                        "workflow_run_id": db_model.workflow_run_id,
+                        "node_execution_id": db_model.node_execution_id,
+                    },
+                )
+            if db_model.node_execution_id:
+                logger.debug(f"Updating cache for node_execution_id: {db_model.node_execution_id}")
+                self._node_execution_cache[db_model.node_execution_id] = db_model
+            return
 
         def operation(session):
             # SQLAlchemy merge intelligently handles both insert and update operations
@@ -366,6 +428,19 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         Returns:
             A list of running NodeExecution instances
         """
+        cached_models = [
+            model
+            for model in self._node_execution_cache.values()
+            if model.workflow_run_id == workflow_run_id
+            and model.tenant_id == self._tenant_id
+            and model.status == WorkflowNodeExecutionStatus.RUNNING
+        ]
+        if self._app_id:
+            cached_models = [model for model in cached_models if model.app_id == self._app_id]
+
+        if self._write_mode == WorkflowLogWriteMode.ASYNC:
+            return [self._to_domain_model(model) for model in cached_models]
+
         with self._session_factory() as session:
             stmt = select(WorkflowNodeExecutionModel).where(
                 WorkflowNodeExecutionModel.workflow_run_id == workflow_run_id,
@@ -378,18 +453,47 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
                 stmt = stmt.where(WorkflowNodeExecutionModel.app_id == self._app_id)
 
             db_models = session.scalars(stmt).all()
-            domain_models = []
+            models_by_key = {model.node_execution_id or model.id: model for model in cached_models}
 
             for model in db_models:
                 # Update cache if node_execution_id is present
                 if model.node_execution_id:
                     self._node_execution_cache[model.node_execution_id] = model
 
-                # Convert to domain model
-                domain_model = self._to_domain_model(model)
-                domain_models.append(domain_model)
+                models_by_key[model.node_execution_id or model.id] = model
 
-            return domain_models
+            return [self._to_domain_model(model) for model in models_by_key.values()]
+
+    def get_cached_executions_by_workflow_run(self, workflow_run_id: str) -> Sequence[WorkflowNodeExecution]:
+        models = [
+            model
+            for model in self._node_execution_cache.values()
+            if model.workflow_run_id == workflow_run_id and model.tenant_id == self._tenant_id
+        ]
+        if self._app_id:
+            models = [model for model in models if model.app_id == self._app_id]
+        models.sort(key=lambda model: (model.index or 0, model.created_at or datetime.datetime.min, model.id))
+        return [self._to_domain_model(model) for model in models]
+
+    def to_trace_snapshot(self, execution: WorkflowNodeExecution) -> dict:
+        db_model = self.to_db_model(execution)
+        return NodeExecutionTraceSnapshot(
+            id=db_model.id,
+            workflow_run_id=db_model.workflow_run_id,
+            node_execution_id=db_model.node_execution_id,
+            node_id=db_model.node_id,
+            node_type=str(db_model.node_type),
+            title=db_model.title,
+            inputs=db_model.inputs_dict,
+            process_data=db_model.process_data_dict,
+            outputs=db_model.outputs_dict,
+            status=str(db_model.status),
+            error=db_model.error,
+            elapsed_time=db_model.elapsed_time,
+            metadata=db_model.execution_metadata_dict,
+            created_at=db_model.created_at,
+            finished_at=db_model.finished_at,
+        ).model_dump(mode="json")
 
     def clear(self) -> None:
         """

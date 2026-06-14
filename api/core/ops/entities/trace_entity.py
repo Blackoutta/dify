@@ -51,6 +51,8 @@ class BaseTraceInfo(BaseModel):
 
 class WorkflowTraceInfo(BaseTraceInfo):
     workflow_data: Any
+    workflow_snapshot: Optional[dict[str, Any]] = None
+    node_execution_snapshots: list[dict[str, Any]] = []
     conversation_id: Optional[str] = None
     workflow_app_log_id: Optional[str] = None
     workflow_id: str

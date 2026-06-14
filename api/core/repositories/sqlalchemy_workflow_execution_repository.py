@@ -84,6 +84,7 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
         # Determine user role based on user type
         self._creator_user_role = CreatorUserRole.ACCOUNT if isinstance(user, Account) else CreatorUserRole.END_USER
 
+
         # Initialize in-memory cache for workflow executions
         # Key: execution_id, Value: WorkflowRun (DB model)
         self._execution_cache: dict[str, WorkflowRun] = {}
@@ -178,6 +179,7 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
 
         return db_model
 
+
     def save(self, execution: WorkflowExecution) -> None:
         """
         Save or update a WorkflowExecution domain entity to the database.
@@ -196,6 +198,7 @@ class SQLAlchemyWorkflowExecutionRepository(WorkflowExecutionRepository):
         """
         # Convert domain model to database model using tenant context and other attributes
         db_model = self._to_db_model(execution)
+
 
         def operation(session):
             session.merge(db_model)
