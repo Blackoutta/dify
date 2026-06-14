@@ -44,28 +44,21 @@ sequenceDiagram
     end
 
     rect rgb(255, 248, 230)
-      note over API,DB: Build workflow-as-tool runtime using short sessions
-      API->>TM: ToolNode._run -> get_workflow_tool_runtime()
-      TM->>DB: SELECT tool_workflow_providers by tenant_id/provider_id
-      note over TM,DB: short session closes before invoke continues
-
-      TM->>PC: workflow_provider_to_controller()
-      PC->>DB: SELECT tool_workflow_providers by id
+      note over API,DB: Build workflow-as-tool runtime using short sessions on first same-run call
+      API->>TM: ToolNode._run -> get_workflow_tool_runtime(cache)
+      TM->>PC: WorkflowToolProviderController.from_db_by_id()
+      PC->>DB: SELECT tool_workflow_providers by tenant_id/provider_id
       PC->>DB: SELECT apps by app_id
       PC->>DB: SELECT accounts by user_id
       PC->>DB: SELECT workflows by app_id/version
       note over PC,DB: short session closes and app/workflow stored on WorkflowTool.workflow_entities
-
       TM->>PC: controller.get_tools returns prebuilt tools
-      note over PC: current implementation normally returns prebuilt self.tools
+      note over TM: prototype stored in GraphRuntimeState.workflow_tool_runtime_cache
     end
 
-    rect rgb(255, 238, 238)
-      note over WT,DB: Before invoking child, current code still reloads app/workflow
-      WT->>DB: SELECT apps by app_id
-      note over WT,DB: short session closes + expunge(app)
-      WT->>DB: SELECT workflows by app_id/version
-      note over WT,DB: short session closes + expunge(workflow)
+    rect rgb(238, 255, 238)
+      note over WT,DB: WorkflowTool._invoke uses cached app/workflow entities
+      note over WT,DB: no duplicate app/workflow SELECTs when workflow_entities are present
     end
 
     WT->>Child: WorkflowAppGenerator.generate(child, streaming=False)
@@ -169,41 +162,44 @@ Child subtotal:
 
 ### 3. Workflow-as-Tool Metadata Queries
 
-Current repaired sync path still does several short-lived metadata queries per workflow-as-tool invocation:
+Optimized sync path uses short-lived metadata queries on the first workflow-as-tool call in one parent workflow run and then reuses the run-level prototype cache for repeated calls to the same workflow tool:
 
 ```text
-ToolManager.get_tool_runtime(... WORKFLOW ...):
-  SELECT tool_workflow_providers by tenant_id/provider_id
+First workflow-as-tool call in one parent workflow run:
+  ToolManager / WorkflowToolProviderController.from_db_by_id(...):
+    SELECT tool_workflow_providers by tenant_id/provider_id
+    SELECT apps by app_id
+    SELECT accounts by user_id
+    SELECT workflows by app_id/version
 
-WorkflowToolProviderController.from_db(...):
-  SELECT tool_workflow_providers by id
-  SELECT apps by app_id
-  SELECT accounts by user_id
-  SELECT workflows by app_id/version
+  WorkflowTool._invoke(...):
+    uses workflow_entities["app"] and workflow_entities["workflow"]
+    no duplicate app/workflow SELECTs
 
-WorkflowTool._invoke(...):
-  SELECT apps by app_id
-  SELECT workflows by app_id/version
+Repeated same workflow tool in the same parent workflow run:
+  cache hit on GraphRuntimeState.workflow_tool_runtime_cache
+  no provider/app/account/workflow metadata SELECTs
 ```
 
 Metadata subtotal:
 
 ```text
-~7 SELECTs per workflow-as-tool invocation
+first call metadata SELECTs:       ~4
+same-run cache-hit SELECTs:        ~0
 ```
 
-These sessions are intentionally short-lived after the latest fix, so they should not hold transactions open across child workflow execution. However, they still add round-trip latency and can become visible under high concurrency.
+These sessions are intentionally short-lived, so they should not hold transactions open across child workflow execution. The cache reduces round-trip latency and repeated metadata reads under high concurrency.
 
 ## Rough Core DB Round-Trip Count
 
 For one minimal nested sync run:
 
 ```text
-metadata SELECTs:                  ~7
+metadata SELECTs:                  ~4 first call / ~0 same-run cache hit
 workflow_runs writes:               4
 workflow_node_executions writes:    10
 --------------------------------------
-core workflow DB round-trips:       ~21+
+core workflow DB round-trips:       ~18+ first call / ~14+ same-run cache hit
 ```
 
 This estimate excludes:
