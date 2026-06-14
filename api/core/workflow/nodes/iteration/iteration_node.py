@@ -137,7 +137,11 @@ class IterationNode(BaseNode[IterationNodeData]):
         from core.workflow.graph_engine.entities.graph_runtime_state import GraphRuntimeState
         from core.workflow.graph_engine.graph_engine import GraphEngine, GraphEngineThreadPool
 
-        graph_runtime_state = GraphRuntimeState(variable_pool=variable_pool, start_at=time.perf_counter())
+        graph_runtime_state = GraphRuntimeState(
+            variable_pool=variable_pool,
+            start_at=time.perf_counter(),
+            workflow_tool_runtime_cache=self.graph_runtime_state.workflow_tool_runtime_cache,
+        )
 
         graph_engine = GraphEngine(
             tenant_id=self.tenant_id,

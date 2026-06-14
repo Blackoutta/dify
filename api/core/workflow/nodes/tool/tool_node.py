@@ -69,7 +69,13 @@ class ToolNode(BaseNode[ToolNodeData]):
 
             variable_pool = self.graph_runtime_state.variable_pool if self.node_data.version != "1" else None
             tool_runtime = ToolManager.get_workflow_tool_runtime(
-                self.tenant_id, self.app_id, self.node_id, self.node_data, self.invoke_from, variable_pool
+                self.tenant_id,
+                self.app_id,
+                self.node_id,
+                self.node_data,
+                self.invoke_from,
+                variable_pool,
+                workflow_tool_runtime_cache=self.graph_runtime_state.workflow_tool_runtime_cache,
             )
         except ToolNodeError as e:
             yield RunCompletedEvent(

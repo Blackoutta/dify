@@ -170,3 +170,54 @@ def test_tool_node_attaches_trace_session_id_to_supported_tool_runtime(monkeypat
     list(tool_node._run())
 
     assert tool_runtime.trace_session_id == "external-session"
+
+
+def test_tool_node_passes_workflow_tool_runtime_cache_to_tool_manager(monkeypatch: pytest.MonkeyPatch):
+    tool_node = _create_tool_node()
+    captured = {}
+    tool_runtime = TraceSessionRecordingWorkflowTool()
+
+    def fake_get_workflow_tool_runtime(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return tool_runtime
+
+    monkeypatch.setattr("core.tools.tool_manager.ToolManager.get_workflow_tool_runtime", fake_get_workflow_tool_runtime)
+    monkeypatch.setattr("core.tools.tool_engine.ToolEngine.generic_invoke", lambda *args, **kwargs: iter(()))
+
+    list(tool_node._run())
+
+    assert (
+        captured["kwargs"]["workflow_tool_runtime_cache"]
+        is tool_node.graph_runtime_state.workflow_tool_runtime_cache
+    )
+
+
+def test_tool_node_sets_trace_context_on_fork_not_cached_prototype(monkeypatch: pytest.MonkeyPatch):
+    tool_node = _create_tool_node(trace_session_id="external-session")
+    tool_node.graph_runtime_state.variable_pool.add(
+        ["sys", SystemVariableKey.WORKFLOW_EXECUTION_ID.value],
+        StringSegment(value="outer-run"),
+    )
+    prototype = TraceSessionRecordingWorkflowTool()
+
+    class ForkedTraceTool(TraceSessionRecordingWorkflowTool):
+        pass
+
+    forked = ForkedTraceTool()
+
+    def fake_get_workflow_tool_runtime(*args, **kwargs):
+        return forked
+
+    monkeypatch.setattr("core.tools.tool_manager.ToolManager.get_workflow_tool_runtime", fake_get_workflow_tool_runtime)
+    monkeypatch.setattr("core.tools.tool_engine.ToolEngine.generic_invoke", lambda *args, **kwargs: iter(()))
+
+    list(tool_node._run())
+
+    assert forked.parent_trace_context == {
+        "parent_workflow_run_id": "outer-run",
+        "parent_node_execution_id": "outer-run:1",
+    }
+    assert forked.trace_session_id == "external-session"
+    assert prototype.parent_trace_context is None
+    assert prototype.trace_session_id is None

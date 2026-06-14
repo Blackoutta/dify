@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from core.model_runtime.entities.llm_entities import LLMUsage
 from core.workflow.entities.variable_pool import VariablePool
 from core.workflow.graph_engine.entities.runtime_route_state import RuntimeRouteState
+from core.workflow.graph_engine.entities.workflow_tool_runtime_cache import WorkflowToolRuntimeCache
 
 
 class GraphRuntimeState(BaseModel):
@@ -25,3 +26,6 @@ class GraphRuntimeState(BaseModel):
 
     node_run_state: RuntimeRouteState = RuntimeRouteState()
     """node run state"""
+
+    workflow_tool_runtime_cache: WorkflowToolRuntimeCache = Field(default_factory=WorkflowToolRuntimeCache)
+    """workflow-as-tool metadata prototype cache scoped to this live workflow run"""
