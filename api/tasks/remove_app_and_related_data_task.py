@@ -7,6 +7,7 @@ from celery import shared_task  # type: ignore
 from sqlalchemy import delete
 from sqlalchemy.exc import SQLAlchemyError
 
+from core.tools.workflow_as_tool.provider_cache import invalidate_workflow_tool_provider_cache
 from extensions.ext_database import db
 from models import (
     ApiToken,
@@ -283,6 +284,7 @@ def _delete_workflow_tool_providers(tenant_id: str, app_id: str):
         {"tenant_id": tenant_id, "app_id": app_id},
         del_tool_provider,
         "tool workflow provider",
+        after_commit=lambda tool_provider_id: invalidate_workflow_tool_provider_cache(tenant_id, tool_provider_id),
     )
 
 
@@ -324,7 +326,13 @@ def _delete_trace_app_configs(tenant_id: str, app_id: str):
     )
 
 
-def _delete_records(query_sql: str, params: dict, delete_func: Callable, name: str) -> None:
+def _delete_records(
+    query_sql: str,
+    params: dict,
+    delete_func: Callable,
+    name: str,
+    after_commit: Callable[[str], None] | None = None,
+) -> None:
     while True:
         with db.engine.begin() as conn:
             rs = conn.execute(db.text(query_sql), params)
@@ -336,6 +344,8 @@ def _delete_records(query_sql: str, params: dict, delete_func: Callable, name: s
                 try:
                     delete_func(record_id)
                     db.session.commit()
+                    if after_commit is not None:
+                        after_commit(record_id)
                     logging.info(click.style(f"Deleted {name} {record_id}", fg="green"))
                 except Exception:
                     logging.exception(f"Error occurred while deleting {name} {record_id}")
