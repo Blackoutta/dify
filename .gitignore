@@ -180,6 +180,7 @@ docker/volumes/couchbase/*
 docker/volumes/oceanbase/*
 docker/volumes/plugin_daemon/*
 docker/volumes/phoenix/*
+docker/volumes/activemq/*
 docker/volumes/matrixone/*
 !docker/volumes/oceanbase/init.d
 
