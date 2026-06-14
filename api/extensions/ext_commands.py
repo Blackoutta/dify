@@ -21,6 +21,7 @@ def init_app(app: DifyApp):
         upgrade_db,
         vdb_migrate,
     )
+    from commands.trace_config import trace_config
 
     cmds_to_register = [
         reset_password,
@@ -40,6 +41,7 @@ def init_app(app: DifyApp):
         clear_free_plan_tenant_expired_logs,
         clear_orphaned_file_records,
         remove_orphaned_files_on_storage,
+        trace_config,
     ]
     for cmd in cmds_to_register:
         app.cli.add_command(cmd)
