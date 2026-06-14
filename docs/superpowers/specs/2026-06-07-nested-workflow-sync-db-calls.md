@@ -162,44 +162,54 @@ Child subtotal:
 
 ### 3. Workflow-as-Tool Metadata Queries
 
-Optimized sync path uses short-lived metadata queries on the first workflow-as-tool call in one parent workflow run and then reuses the run-level prototype cache for repeated calls to the same workflow tool:
+Optimized sync path uses two metadata caches:
 
 ```text
-First workflow-as-tool call in one parent workflow run:
+Redis cold miss for the first cross-request workflow-as-tool provider resolution:
   ToolManager / WorkflowToolProviderController.from_db_by_id(...):
     SELECT tool_workflow_providers by tenant_id/provider_id
     SELECT apps by app_id
     SELECT accounts by user_id
     SELECT workflows by app_id/version
+  Redis singleflight bounds concurrent cold-miss DB loaders for the same tenant/provider key.
 
-  WorkflowTool._invoke(...):
-    uses workflow_entities["app"] and workflow_entities["workflow"]
-    no duplicate app/workflow SELECTs
+Redis warm hit for later parent workflow runs:
+  WorkflowToolProviderController builds controller/tool metadata from Redis payload
+  no provider/app/account/workflow metadata SELECTs for provider resolution
+
+Workflow response tool icon events:
+  ToolManager.generate_workflow_tool_icon_url reads the same provider metadata cache
+  no direct tool_workflow_providers SELECT when the Redis metadata cache is warm
+
+WorkflowTool._invoke(...):
+  uses workflow_entities["app"] and workflow_entities["workflow"]
+  no duplicate app/workflow SELECTs
 
 Repeated same workflow tool in the same parent workflow run:
   cache hit on GraphRuntimeState.workflow_tool_runtime_cache
-  no provider/app/account/workflow metadata SELECTs
+  no Redis lookup and no provider/app/account/workflow metadata SELECTs
 ```
 
 Metadata subtotal:
 
 ```text
-first call metadata SELECTs:       ~4
-same-run cache-hit SELECTs:        ~0
+Redis cold miss metadata SELECTs:       ~4, bounded by singleflight under concurrency
+Redis warm hit metadata SELECTs:        ~0
+same-run cache-hit SELECTs:             ~0
 ```
 
-These sessions are intentionally short-lived, so they should not hold transactions open across child workflow execution. The cache reduces round-trip latency and repeated metadata reads under high concurrency.
+These sessions are intentionally short-lived, so they should not hold transactions open across child workflow execution. The Redis cache reduces cross-request first-call metadata reads; the per-run cache reduces repeated reads inside one parent workflow run.
 
 ## Rough Core DB Round-Trip Count
 
 For one minimal nested sync run:
 
 ```text
-metadata SELECTs:                  ~4 first call / ~0 same-run cache hit
+metadata SELECTs:                  ~4 Redis cold miss / ~0 Redis warm hit / ~0 same-run cache hit
 workflow_runs writes:               4
 workflow_node_executions writes:    10
 --------------------------------------
-core workflow DB round-trips:       ~18+ first call / ~14+ same-run cache hit
+core workflow DB round-trips:       ~18+ Redis cold miss / ~14+ Redis warm or same-run cache hit
 ```
 
 This estimate excludes:
