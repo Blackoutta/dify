@@ -267,23 +267,18 @@ class ToolManager:
                 ),
             )
         elif provider_type == ToolProviderType.WORKFLOW:
-            workflow_provider = (
-                db.session.query(WorkflowToolProvider)
-                .filter(WorkflowToolProvider.tenant_id == tenant_id, WorkflowToolProvider.id == provider_id)
-                .first()
-            )
+            try:
+                controller = WorkflowToolProviderController.from_db_by_id(provider_id, tenant_id=tenant_id)
+            except ValueError as exc:
+                raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found") from exc
 
-            if workflow_provider is None:
-                raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
-
-            controller = ToolTransformService.workflow_provider_to_controller(db_provider=workflow_provider)
-            controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=workflow_provider.tenant_id)
+            controller_tools: list[WorkflowTool] = controller.get_tools(tenant_id=tenant_id)
             if controller_tools is None or len(controller_tools) == 0:
                 raise ToolProviderNotFoundError(f"workflow provider {provider_id} not found")
 
             return cast(
                 WorkflowTool,
-                controller.get_tools(tenant_id=workflow_provider.tenant_id)[0].fork_tool_runtime(
+                controller_tools[0].fork_tool_runtime(
                     runtime=ToolRuntime(
                         tenant_id=tenant_id,
                         credentials={},

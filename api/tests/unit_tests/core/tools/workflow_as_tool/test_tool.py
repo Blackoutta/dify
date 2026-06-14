@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import pytest
 
 from core.app.entities.app_invoke_entities import InvokeFrom
@@ -7,6 +9,8 @@ from core.tools.entities.common_entities import I18nObject
 from core.tools.entities.tool_entities import ToolEntity, ToolIdentity
 from core.tools.errors import ToolInvokeError
 from core.tools.workflow_as_tool.tool import WorkflowTool
+from models.model import App
+from models.workflow import Workflow
 
 
 def test_workflow_tool_should_raise_tool_invoke_error_when_result_has_error_field(monkeypatch):
@@ -93,6 +97,131 @@ def test_workflow_tool_forwards_private_parent_trace_context(monkeypatch):
         parent_workflow_run_id="outer-run",
         parent_node_execution_id="outer-run:1",
     )
+
+
+def _workflow_tool_for_session_tests():
+    entity = ToolEntity(
+        identity=ToolIdentity(author="test", name="test tool", label=I18nObject(en_US="test tool"), provider="test"),
+        parameters=[],
+        description=None,
+        output_schema=None,
+        has_runtime_parameters=False,
+    )
+    runtime = ToolRuntime(tenant_id="tenant-1", invoke_from=InvokeFrom.EXPLORE)
+    return WorkflowTool(
+        workflow_app_id="app-1",
+        workflow_as_tool_id="provider-1",
+        version="1",
+        workflow_entities={},
+        workflow_call_depth=1,
+        entity=entity,
+        runtime=runtime,
+    )
+
+
+def test_workflow_tool_loads_app_with_short_session(monkeypatch):
+    closed = {"value": False}
+    app = App(id="app-1", tenant_id="tenant-1", mode="workflow", name="Child")
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            closed["value"] = True
+
+        @contextmanager
+        def begin(self):
+            yield self
+
+        def scalar(self, stmt):
+            return app
+
+        def expunge(self, instance):
+            instance._detached_by_test = True
+
+    monkeypatch.setattr("core.tools.workflow_as_tool.tool.session_factory.create_session", lambda: FakeSession())
+
+    loaded = _workflow_tool_for_session_tests()._get_app("app-1")
+
+    assert loaded is app
+    assert loaded._detached_by_test is True
+    assert closed["value"] is True
+
+
+def test_workflow_tool_loads_workflow_with_short_session(monkeypatch):
+    closed = {"value": False}
+    workflow = Workflow(id="workflow-1", app_id="app-1", version="1", graph="{}", features="{}")
+
+    class FakeScalars:
+        def first(self):
+            return workflow
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            closed["value"] = True
+
+        @contextmanager
+        def begin(self):
+            yield self
+
+        def scalar(self, stmt):
+            return workflow
+
+        def scalars(self, stmt):
+            return FakeScalars()
+
+        def expunge(self, instance):
+            instance._detached_by_test = True
+
+    monkeypatch.setattr("core.tools.workflow_as_tool.tool.session_factory.create_session", lambda: FakeSession())
+
+    loaded = _workflow_tool_for_session_tests()._get_workflow("app-1", "1")
+
+    assert loaded is workflow
+    assert loaded._detached_by_test is True
+    assert closed["value"] is True
+
+
+def test_workflow_tool_does_not_hold_lookup_session_while_child_workflow_runs(monkeypatch):
+    closed_count = {"value": 0}
+    app = App(id="app-1", tenant_id="tenant-1", mode="workflow", name="Child")
+    workflow = Workflow(id="workflow-1", app_id="app-1", version="1", graph="{}", features="{}")
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            closed_count["value"] += 1
+
+        @contextmanager
+        def begin(self):
+            yield self
+
+        def scalar(self, stmt):
+            return app if closed_count["value"] == 0 else workflow
+
+        def expunge(self, instance):
+            return None
+
+    monkeypatch.setattr("core.tools.workflow_as_tool.tool.session_factory.create_session", lambda: FakeSession())
+    monkeypatch.setattr("core.tools.workflow_as_tool.tool.current_user", object())
+
+    captured = {}
+
+    def fake_generate(self, **kwargs):
+        captured["closed_before_generate"] = closed_count["value"]
+        return {"data": {"outputs": {"answer": "ok"}}}
+
+    monkeypatch.setattr("core.app.apps.workflow.app_generator.WorkflowAppGenerator.generate", fake_generate)
+
+    list(_workflow_tool_for_session_tests().invoke("user-1", {"query": "hello"}))
+
+    assert captured["closed_before_generate"] == 2
 
 
 def test_workflow_tool_forwards_trace_session_id_to_child_generator(monkeypatch):
