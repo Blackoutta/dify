@@ -224,6 +224,13 @@ services:
       - ./middleware.env
     volumes:
       - ${ACTIVEMQ_HOST_VOLUME:-./volumes/activemq}:/opt/apache-activemq/data
+    command: >
+      /bin/sh -c '
+      if ! grep -q "transport.defaultHeartBeat" /opt/apache-activemq/conf/activemq.xml; then
+        sed -i "s#stomp://0.0.0.0:61613?maximumConnections=1000\&amp;wireFormat.maxFrameSize=104857600#stomp://0.0.0.0:61613?maximumConnections=1000\&amp;wireFormat.maxFrameSize=104857600\&amp;transport.defaultHeartBeat=${ACTIVEMQ_STOMP_DEFAULT_HEARTBEAT:-30000,30000}\&amp;transport.hbGracePeriodMultiplier=${ACTIVEMQ_STOMP_HB_GRACE_PERIOD_MULTIPLIER:-2.0}#" /opt/apache-activemq/conf/activemq.xml;
+      fi;
+      exec /opt/apache-activemq/bin/activemq console
+      '
     ports:
       - "${EXPOSE_ACTIVEMQ_STOMP_PORT:-61613}:61613"
       - "${EXPOSE_ACTIVEMQ_OPENWIRE_PORT:-61616}:61616"
