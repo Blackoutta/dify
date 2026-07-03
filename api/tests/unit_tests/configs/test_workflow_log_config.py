@@ -10,8 +10,10 @@ def test_async_workflow_log_defaults_are_disabled(monkeypatch) -> None:
         "WORKFLOW_LOG_ACTIVEMQ_USERNAME",
         "WORKFLOW_LOG_ACTIVEMQ_PASSWORD",
         "WORKFLOW_LOG_ACTIVEMQ_DESTINATION",
+        "WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE",
         "WORKFLOW_LOG_PUBLISH_TIMEOUT",
         "WORKFLOW_LOG_PUBLISH_MAX_RETRIES",
+        "WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -24,5 +26,7 @@ def test_async_workflow_log_defaults_are_disabled(monkeypatch) -> None:
     assert config.WORKFLOW_LOG_ACTIVEMQ_USERNAME == ""
     assert config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD == ""
     assert config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION == "/queue/dify.workflow.logs"
+    assert config.WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE == 1
     assert config.WORKFLOW_LOG_PUBLISH_TIMEOUT == 0.2
     assert config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES == 1
+    assert config.WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD == 0.5

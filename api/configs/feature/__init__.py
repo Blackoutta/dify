@@ -1335,8 +1335,16 @@ class WorkflowLogConfig(BaseSettings):
         default="/queue/dify.workflow.logs",
         description="ActiveMQ destination for workflow node execution log events",
     )
+    WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE: int = Field(
+        default=1,
+        description="Number of ActiveMQ STOMP producer connections per API worker process",
+    )
     WORKFLOW_LOG_PUBLISH_TIMEOUT: float = Field(default=0.2, description="Workflow log publish timeout in seconds")
     WORKFLOW_LOG_PUBLISH_MAX_RETRIES: int = Field(default=1, description="Workflow log publish retry attempts")
+    WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD: float = Field(
+        default=0.5,
+        description="Log workflow log publish timing when one publish takes at least this many seconds",
+    )
 
 
 class SwaggerUIConfig(BaseSettings):
