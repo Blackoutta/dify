@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Union
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 
 class BaseTraceInfo(BaseModel):
@@ -36,6 +36,7 @@ class BaseTraceInfo(BaseModel):
 
 class WorkflowTraceInfo(BaseTraceInfo):
     workflow_data: Any = None
+    node_execution_snapshots: list[dict[str, Any]] = Field(default_factory=list)
     conversation_id: str | None = None
     workflow_app_log_id: str | None = None
     workflow_id: str

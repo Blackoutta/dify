@@ -12,7 +12,11 @@ from dify_graph.enums import WorkflowNodeExecutionStatus, WorkflowType
 from dify_graph.node_events import NodeRunResult
 
 
-def _build_layer() -> WorkflowPersistenceLayer:
+def _build_layer(
+    *,
+    workflow_node_execution_repository: Mock | None = None,
+    trace_manager: Mock | None = None,
+) -> WorkflowPersistenceLayer:
     application_generate_entity = Mock()
     application_generate_entity.inputs = {}
 
@@ -25,7 +29,8 @@ def _build_layer() -> WorkflowPersistenceLayer:
             graph_data={},
         ),
         workflow_execution_repository=Mock(),
-        workflow_node_execution_repository=Mock(),
+        workflow_node_execution_repository=workflow_node_execution_repository or Mock(),
+        trace_manager=trace_manager,
     )
 
 
@@ -58,3 +63,23 @@ def test_update_node_execution_prefers_event_finished_at(monkeypatch: pytest.Mon
 
     assert node_execution.finished_at == event_finished_at
     assert node_execution.elapsed_time == 2.0
+
+
+def test_enqueue_trace_task_passes_node_execution_snapshots() -> None:
+    workflow_node_execution_repository = Mock()
+    workflow_node_execution_repository.get_cached_executions_by_workflow_run.return_value = ["node-execution"]
+    workflow_node_execution_repository.to_trace_snapshot.return_value = {"id": "row-id"}
+    trace_manager = Mock()
+    trace_manager.user_id = "user-id"
+    layer = _build_layer(
+        workflow_node_execution_repository=workflow_node_execution_repository,
+        trace_manager=trace_manager,
+    )
+    layer._system_variables = Mock(return_value={})
+    execution = Mock()
+    execution.id_ = "run-id"
+
+    layer._enqueue_trace_task(execution)
+
+    trace_task = trace_manager.add_trace_task.call_args.args[0]
+    assert trace_task.kwargs["node_execution_snapshots"] == [{"id": "row-id"}]

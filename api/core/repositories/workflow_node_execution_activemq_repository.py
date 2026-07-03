@@ -315,6 +315,9 @@ class ActiveMQWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository):
     def save_execution_data(self, execution: WorkflowNodeExecution) -> None:
         return
 
+    def get_cached_executions_by_workflow_run(self, workflow_run_id: str) -> Sequence[WorkflowNodeExecution]:
+        return self.get_by_workflow_run(workflow_run_id)
+
     def get_by_workflow_run(
         self,
         workflow_run_id: str,
@@ -339,6 +342,31 @@ class ActiveMQWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository):
         execution_ids = self._workflow_run_mapping.setdefault(execution.workflow_execution_id, [])
         if execution.id not in execution_ids:
             execution_ids.append(execution.id)
+
+    def to_trace_snapshot(self, execution: WorkflowNodeExecution) -> dict[str, Any]:
+        converter = WorkflowRuntimeTypeConverter()
+        return {
+            "id": execution.id,
+            "tenant_id": self._tenant_id,
+            "app_id": self._app_id,
+            "workflow_id": execution.workflow_id,
+            "workflow_run_id": execution.workflow_execution_id,
+            "node_execution_id": execution.node_execution_id,
+            "node_id": execution.node_id,
+            "node_type": _value(execution.node_type),
+            "title": execution.title,
+            "index": execution.index,
+            "predecessor_node_id": execution.predecessor_node_id,
+            "inputs": converter.to_json_encodable(execution.inputs),
+            "process_data": converter.to_json_encodable(execution.process_data),
+            "outputs": converter.to_json_encodable(execution.outputs),
+            "status": _value(execution.status),
+            "error": execution.error,
+            "elapsed_time": execution.elapsed_time,
+            "metadata": jsonable_encoder(execution.metadata or {}),
+            "created_at": _iso_utc(execution.created_at),
+            "finished_at": _iso_utc(execution.finished_at),
+        }
 
     def _build_event(self, execution: WorkflowNodeExecution, state_version: int) -> dict[str, Any]:
         converter = WorkflowRuntimeTypeConverter()

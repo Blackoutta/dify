@@ -407,8 +407,20 @@ class WorkflowPersistenceLayer(GraphEngineLayer):
             conversation_id=conversation_id,
             user_id=self._trace_manager.user_id,
             external_trace_id=external_trace_id,
+            node_execution_snapshots=self._node_trace_snapshots(execution.id_),
         )
         self._trace_manager.add_trace_task(trace_task)
+
+    def _node_trace_snapshots(self, workflow_execution_id: str) -> list[dict[str, Any]]:
+        if not hasattr(self._workflow_node_execution_repository, "get_cached_executions_by_workflow_run"):
+            return []
+        if not hasattr(self._workflow_node_execution_repository, "to_trace_snapshot"):
+            return []
+
+        node_executions = self._workflow_node_execution_repository.get_cached_executions_by_workflow_run(
+            workflow_execution_id
+        )
+        return [self._workflow_node_execution_repository.to_trace_snapshot(node) for node in node_executions]
 
     def _system_variables(self) -> Mapping[str, Any]:
         runtime_state = self.graph_runtime_state

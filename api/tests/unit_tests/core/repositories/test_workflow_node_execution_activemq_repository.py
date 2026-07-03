@@ -184,6 +184,23 @@ def test_repository_publishes_outside_lock() -> None:
     assert publish_lock_states == [False]
 
 
+def test_repository_returns_trace_snapshot_from_cache() -> None:
+    publisher = FakePublisher()
+    repo = _repo(publisher.publish)
+    execution = _execution(WorkflowNodeExecutionStatus.SUCCEEDED)
+    execution.metadata = {"total_tokens": 7}
+
+    repo.save(execution)
+
+    assert repo.get_cached_executions_by_workflow_run("run-id") == [execution]
+    snapshot = repo.to_trace_snapshot(execution)
+    assert snapshot["id"] == "row-id"
+    assert snapshot["workflow_run_id"] == "run-id"
+    assert snapshot["node_type"] == BuiltinNodeTypes.LLM
+    assert snapshot["status"] == WorkflowNodeExecutionStatus.SUCCEEDED.value
+    assert snapshot["metadata"] == {"total_tokens": 7}
+
+
 def test_publisher_reuses_connection_for_successive_publishes(monkeypatch) -> None:
     connection = FakeStompConnection()
     _install_fake_stomp(monkeypatch, [connection])
