@@ -7,9 +7,11 @@ writes and truncation.
 
 import json
 import logging
-import socket
+import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
@@ -35,50 +37,172 @@ def _iso_utc(value: datetime | None) -> str | None:
     return value.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
 
 
-def _frame(command: str, headers: dict[str, str], body: bytes = b"") -> bytes:
-    header_lines = "\n".join(f"{key}:{value}" for key, value in headers.items())
-    return f"{command}\n{header_lines}\n\n".encode() + body + b"\x00"
+@dataclass
+class _ConnectionSlot:
+    index: int
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    connection: Any | None = None
 
 
 class WorkflowNodeExecutionActiveMQPublisher:
-    """Minimal STOMP 1.2 publisher using the stdlib socket module."""
+    """Pooled ActiveMQ STOMP publisher for workflow node execution events."""
+
+    def __init__(
+        self,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        destination: str | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        slow_log_threshold: float | None = None,
+        pool_size: int | None = None,
+    ) -> None:
+        self._host = host or dify_config.WORKFLOW_LOG_ACTIVEMQ_HOST
+        self._port = port or dify_config.WORKFLOW_LOG_ACTIVEMQ_PORT
+        self._username = username if username is not None else dify_config.WORKFLOW_LOG_ACTIVEMQ_USERNAME
+        self._password = password if password is not None else dify_config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD
+        self._destination = destination or dify_config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION
+        self._timeout = timeout if timeout is not None else dify_config.WORKFLOW_LOG_PUBLISH_TIMEOUT
+        retries = max_retries if max_retries is not None else dify_config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES
+        threshold = (
+            slow_log_threshold
+            if slow_log_threshold is not None
+            else dify_config.WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD
+        )
+        self._max_retries = max(0, retries)
+        self._slow_log_threshold = max(0.0, threshold)
+        self._pool_size = max(1, pool_size if pool_size is not None else dify_config.WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE)
+        self._slots = [_ConnectionSlot(index=index) for index in range(self._pool_size)]
+        self._slot_selection_lock = threading.RLock()
+        self._next_slot_index = 0
+        self._connection: Any | None = None
 
     def publish(self, event: dict[str, Any]) -> None:
-        body = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        body = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
         headers = {
-            "destination": dify_config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION,
+            "destination": self._destination,
             "content-type": "application/json",
             "event_type": event["event_type"],
             "schema_version": str(event["schema_version"]),
             "JMSXGroupID": event["payload"]["workflow_run_id"] or event["payload"]["id"],
-            "content-length": str(len(body)),
         }
-        for attempt in range(dify_config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES + 1):
-            try:
-                self._send(body, headers)
-                return
-            except OSError:
-                if attempt >= dify_config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES:
-                    raise
+        publish_started_at = time.perf_counter()
+        lock_wait_seconds = 0.0
+        attempts = 0
+        success = False
+        slot = self._select_slot()
 
-    def _send(self, body: bytes, headers: dict[str, str]) -> None:
-        timeout = dify_config.WORKFLOW_LOG_PUBLISH_TIMEOUT
-        with socket.create_connection(
-            (dify_config.WORKFLOW_LOG_ACTIVEMQ_HOST, dify_config.WORKFLOW_LOG_ACTIVEMQ_PORT),
-            timeout=timeout,
-        ) as sock:
-            sock.settimeout(timeout)
-            connect_headers = {
-                "accept-version": "1.2",
-                "host": dify_config.WORKFLOW_LOG_ACTIVEMQ_HOST,
-            }
-            if dify_config.WORKFLOW_LOG_ACTIVEMQ_USERNAME:
-                connect_headers["login"] = dify_config.WORKFLOW_LOG_ACTIVEMQ_USERNAME
-                connect_headers["passcode"] = dify_config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD
-            sock.sendall(_frame("CONNECT", connect_headers))
-            sock.recv(1024)
-            sock.sendall(_frame("SEND", headers, body))
-            sock.sendall(_frame("DISCONNECT", {}))
+        try:
+            with slot.lock:
+                lock_wait_seconds = time.perf_counter() - publish_started_at
+                for attempt in range(self._max_retries + 1):
+                    attempts = attempt + 1
+                    try:
+                        connection = self._ensure_connection(slot)
+                        connection.send(destination=self._destination, body=body, headers=headers)
+                        success = True
+                        return
+                    except Exception:
+                        self._reset_connection(slot)
+                        if attempt >= self._max_retries:
+                            raise
+        finally:
+            total_seconds = time.perf_counter() - publish_started_at
+            self._log_slow_publish(
+                event=event,
+                total_seconds=total_seconds,
+                lock_wait_seconds=lock_wait_seconds,
+                send_seconds=max(0.0, total_seconds - lock_wait_seconds),
+                attempts=attempts,
+                success=success,
+                pool_slot=slot.index,
+            )
+
+    def warm_up(self) -> None:
+        for slot in self._slots:
+            with slot.lock:
+                self._ensure_connection(slot)
+
+    def close(self) -> None:
+        for slot in self._slots:
+            with slot.lock:
+                self._reset_connection(slot)
+
+    def _select_slot(self) -> _ConnectionSlot:
+        with self._slot_selection_lock:
+            slot = self._slots[self._next_slot_index]
+            self._next_slot_index = (self._next_slot_index + 1) % self._pool_size
+            return slot
+
+    def _ensure_connection(self, slot: _ConnectionSlot) -> Any:
+        if slot.connection is not None:
+            is_connected = getattr(slot.connection, "is_connected", None)
+            if not callable(is_connected) or is_connected():
+                return slot.connection
+            self._reset_connection(slot)
+
+        try:
+            import stomp  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("stomp.py is required when async workflow log publishing is enabled") from exc
+
+        connection = stomp.Connection([(self._host, self._port)], timeout=self._timeout)
+        connection.connect(
+            username=self._username or None,
+            passcode=self._password or None,
+            wait=True,
+        )
+        slot.connection = connection
+        self._sync_legacy_connection_handle()
+        return connection
+
+    def _reset_connection(self, slot: _ConnectionSlot) -> None:
+        connection = slot.connection
+        slot.connection = None
+        self._sync_legacy_connection_handle()
+        if connection is None:
+            return
+        try:
+            connection.disconnect()
+        except Exception:
+            logger.debug("Failed to disconnect ActiveMQ workflow log producer", exc_info=True)
+
+    def _sync_legacy_connection_handle(self) -> None:
+        self._connection = self._slots[0].connection
+
+    def _log_slow_publish(
+        self,
+        *,
+        event: dict[str, Any],
+        total_seconds: float,
+        lock_wait_seconds: float,
+        send_seconds: float,
+        attempts: int,
+        success: bool,
+        pool_slot: int,
+    ) -> None:
+        if total_seconds < self._slow_log_threshold:
+            return
+        payload = event.get("payload") or {}
+        logger.warning(
+            "Slow ActiveMQ workflow log publish "
+            "event_id=%s workflow_run_id=%s node_execution_id=%s destination=%s "
+            "total_ms=%.3f lock_wait_ms=%.3f send_ms=%.3f attempts=%s success=%s pool_slot=%s pool_size=%s",
+            event.get("event_id"),
+            payload.get("workflow_run_id"),
+            payload.get("node_execution_id") or payload.get("id"),
+            self._destination,
+            total_seconds * 1000,
+            lock_wait_seconds * 1000,
+            send_seconds * 1000,
+            attempts,
+            success,
+            pool_slot,
+            self._pool_size,
+        )
 
 
 class ActiveMQWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository):
