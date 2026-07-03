@@ -175,6 +175,7 @@ docker/volumes/etcd/*
 docker/volumes/minio/*
 docker/volumes/milvus/*
 docker/volumes/chroma/*
+docker/volumes/activemq/*
 docker/volumes/opensearch/data/*
 docker/volumes/myscale/data/*
 docker/volumes/myscale/log/*
