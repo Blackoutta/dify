@@ -23,6 +23,7 @@ from core.ops.tencent_trace.client import TencentTraceClient
 from core.ops.tencent_trace.entities.tencent_trace_entity import SpanData
 from core.ops.tencent_trace.span_builder import TencentSpanBuilder
 from core.ops.tencent_trace.utils import TencentTraceUtils
+from core.ops.workflow_trace_snapshots import workflow_node_executions_from_snapshots
 from core.repositories import SQLAlchemyWorkflowNodeExecutionRepository
 from dify_graph.entities.workflow_node_execution import (
     WorkflowNodeExecution,
@@ -220,6 +221,10 @@ class TencentDataTrace(BaseTraceInstance):
 
     def _get_workflow_node_executions(self, trace_info: WorkflowTraceInfo) -> list[WorkflowNodeExecution]:
         """Retrieve workflow node executions from database."""
+        workflow_node_executions = workflow_node_executions_from_snapshots(trace_info)
+        if workflow_node_executions is not None:
+            return list(workflow_node_executions)
+
         try:
             session_maker = sessionmaker(bind=db.engine)
 

@@ -56,6 +56,7 @@ from core.ops.entities.trace_entity import (
     ToolTraceInfo,
     WorkflowTraceInfo,
 )
+from core.ops.workflow_trace_snapshots import workflow_node_executions_from_snapshots
 from core.repositories import DifyCoreRepositoryFactory
 from dify_graph.entities import WorkflowNodeExecution
 from dify_graph.enums import BuiltinNodeTypes, WorkflowNodeExecutionMetadataKey
@@ -282,6 +283,10 @@ class AliyunDataTrace(BaseTraceInstance):
         self.trace_client.add_span(tool_span)
 
     def get_workflow_node_executions(self, trace_info: WorkflowTraceInfo) -> Sequence[WorkflowNodeExecution]:
+        workflow_node_executions = workflow_node_executions_from_snapshots(trace_info)
+        if workflow_node_executions is not None:
+            return workflow_node_executions
+
         app_id = trace_info.metadata.get("app_id")
         if not app_id:
             raise ValueError("No app_id found in trace_info metadata")

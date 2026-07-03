@@ -259,6 +259,54 @@ def test_workflow_trace_no_message_id(trace_instance, monkeypatch):
     assert trace_data.name == TraceTaskName.WORKFLOW_TRACE
 
 
+def test_workflow_trace_uses_node_snapshots_without_repository(trace_instance, monkeypatch):
+    trace_info = WorkflowTraceInfo(
+        workflow_id="wf-1",
+        tenant_id="tenant-1",
+        workflow_run_id="run-1",
+        workflow_run_elapsed_time=1.0,
+        workflow_run_status="succeeded",
+        workflow_run_inputs={},
+        workflow_run_outputs={},
+        workflow_run_version="1.0",
+        total_tokens=0,
+        file_list=[],
+        query="",
+        start_time=_dt(),
+        end_time=_dt() + timedelta(seconds=1),
+        trace_id="trace-1",
+        metadata={"app_id": "app-1", "user_id": "user-1"},
+        error="",
+        node_execution_snapshots=[
+            {
+                "id": "node-code",
+                "workflow_run_id": "run-1",
+                "node_execution_id": "node-code",
+                "node_id": "code",
+                "node_type": BuiltinNodeTypes.CODE,
+                "title": "Code Node",
+                "inputs": {"code": "print"},
+                "process_data": {},
+                "outputs": {"result": "ok"},
+                "status": "succeeded",
+                "metadata": {},
+                "created_at": _dt().isoformat(),
+                "elapsed_time": 0.2,
+            }
+        ],
+    )
+    mock_factory = MagicMock()
+    monkeypatch.setattr("core.ops.langfuse_trace.langfuse_trace.DifyCoreRepositoryFactory", mock_factory)
+    trace_instance.add_trace = MagicMock()
+    trace_instance.add_span = MagicMock()
+    trace_instance.add_generation = MagicMock()
+
+    trace_instance.workflow_trace(trace_info)
+
+    mock_factory.create_workflow_node_execution_repository.assert_not_called()
+    assert trace_instance.add_span.call_count == 1
+
+
 def test_workflow_trace_missing_app_id(trace_instance, monkeypatch):
     trace_info = WorkflowTraceInfo(
         workflow_id="wf-1",
