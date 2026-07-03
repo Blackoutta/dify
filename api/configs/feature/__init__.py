@@ -1322,6 +1322,21 @@ class WorkflowLogConfig(BaseSettings):
     WORKFLOW_LOG_CLEANUP_SPECIFIC_WORKFLOW_IDS: str = Field(
         default="", description="Comma-separated list of workflow IDs to clean logs for"
     )
+    WORKFLOW_LOG_ASYNC_ENABLED: bool = Field(
+        default=False,
+        description="Publish workflow node execution logs asynchronously instead of writing them in the API path",
+    )
+    WORKFLOW_LOG_QUEUE_PROVIDER: str = Field(default="activemq", description="Workflow log async queue provider")
+    WORKFLOW_LOG_ACTIVEMQ_HOST: str = Field(default="localhost", description="ActiveMQ STOMP host")
+    WORKFLOW_LOG_ACTIVEMQ_PORT: int = Field(default=61613, description="ActiveMQ STOMP port")
+    WORKFLOW_LOG_ACTIVEMQ_USERNAME: str = Field(default="", description="ActiveMQ username")
+    WORKFLOW_LOG_ACTIVEMQ_PASSWORD: str = Field(default="", description="ActiveMQ password")
+    WORKFLOW_LOG_ACTIVEMQ_DESTINATION: str = Field(
+        default="/queue/dify.workflow.logs",
+        description="ActiveMQ destination for workflow node execution log events",
+    )
+    WORKFLOW_LOG_PUBLISH_TIMEOUT: float = Field(default=0.2, description="Workflow log publish timeout in seconds")
+    WORKFLOW_LOG_PUBLISH_MAX_RETRIES: int = Field(default=1, description="Workflow log publish retry attempts")
 
 
 class SwaggerUIConfig(BaseSettings):
