@@ -5,6 +5,7 @@ for workflow runtime lookups, while the external consumer owns durable database
 writes and truncation.
 """
 
+import atexit
 import json
 import logging
 import threading
@@ -42,6 +43,23 @@ class _ConnectionSlot:
     index: int
     lock: threading.RLock = field(default_factory=threading.RLock)
     connection: Any | None = None
+
+
+@dataclass(frozen=True)
+class _PublisherConfigKey:
+    host: str
+    port: int
+    username: str
+    password: str
+    destination: str
+    timeout: float
+    max_retries: int
+    slow_log_threshold: float
+    pool_size: int
+
+
+_publisher_lock = threading.RLock()
+_publishers: dict[_PublisherConfigKey, "WorkflowNodeExecutionActiveMQPublisher"] = {}
 
 
 class WorkflowNodeExecutionActiveMQPublisher:
@@ -205,6 +223,39 @@ class WorkflowNodeExecutionActiveMQPublisher:
         )
 
 
+def get_workflow_node_execution_activemq_publisher() -> WorkflowNodeExecutionActiveMQPublisher:
+    key = _PublisherConfigKey(
+        host=dify_config.WORKFLOW_LOG_ACTIVEMQ_HOST,
+        port=dify_config.WORKFLOW_LOG_ACTIVEMQ_PORT,
+        username=dify_config.WORKFLOW_LOG_ACTIVEMQ_USERNAME,
+        password=dify_config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD,
+        destination=dify_config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION,
+        timeout=dify_config.WORKFLOW_LOG_PUBLISH_TIMEOUT,
+        max_retries=dify_config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES,
+        slow_log_threshold=dify_config.WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD,
+        pool_size=dify_config.WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE,
+    )
+    with _publisher_lock:
+        publisher = _publishers.get(key)
+        if publisher is not None:
+            return publisher
+
+        publisher = WorkflowNodeExecutionActiveMQPublisher(
+            host=key.host,
+            port=key.port,
+            username=key.username,
+            password=key.password,
+            destination=key.destination,
+            timeout=key.timeout,
+            max_retries=key.max_retries,
+            slow_log_threshold=key.slow_log_threshold,
+            pool_size=key.pool_size,
+        )
+        _publishers[key] = publisher
+        atexit.register(publisher.close)
+        return publisher
+
+
 class ActiveMQWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository):
     """Publishes workflow node execution snapshots and keeps an in-memory read cache."""
 
@@ -236,7 +287,7 @@ class ActiveMQWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository):
         self._triggered_from = triggered_from
         self._creator_user_id = user.id
         self._creator_user_role = CreatorUserRole.ACCOUNT if isinstance(user, Account) else CreatorUserRole.END_USER
-        self._publish_event = publisher or WorkflowNodeExecutionActiveMQPublisher().publish
+        self._publish_event = publisher or get_workflow_node_execution_activemq_publisher().publish
         self._execution_cache = {}
         self._workflow_run_mapping = {}
         self._state_versions = {}

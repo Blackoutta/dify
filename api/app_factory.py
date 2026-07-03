@@ -163,6 +163,7 @@ def initialize_extensions(app: DifyApp):
         ext_storage,
         ext_timezone,
         ext_warnings,
+        ext_workflow_log_publisher,
     )
 
     init_flask_context()
@@ -183,6 +184,7 @@ def initialize_extensions(app: DifyApp):
         ext_redis,
         ext_storage,
         ext_logstore,  # Initialize logstore after storage, before celery
+        ext_workflow_log_publisher,
         ext_celery,
         ext_login,
         ext_mail,
