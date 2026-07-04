@@ -1331,9 +1331,13 @@ class WorkflowLogConfig(BaseSettings):
     WORKFLOW_LOG_ACTIVEMQ_PORT: int = Field(default=61613, description="ActiveMQ STOMP port")
     WORKFLOW_LOG_ACTIVEMQ_USERNAME: str = Field(default="", description="ActiveMQ username")
     WORKFLOW_LOG_ACTIVEMQ_PASSWORD: str = Field(default="", description="ActiveMQ password")
-    WORKFLOW_LOG_ACTIVEMQ_DESTINATION: str = Field(
-        default="/queue/dify.workflow.logs",
+    WORKFLOW_NODE_EXECUTION_ACTIVEMQ_DESTINATION: str = Field(
+        default="/queue/dify.workflow.node-executions",
         description="ActiveMQ destination for workflow node execution log events",
+    )
+    WORKFLOW_APP_LOG_ACTIVEMQ_DESTINATION: str = Field(
+        default="/queue/dify.workflow.app-logs",
+        description="ActiveMQ destination for workflow app log events",
     )
     WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE: int = Field(
         default=1,

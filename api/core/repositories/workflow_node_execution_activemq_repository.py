@@ -82,7 +82,7 @@ class WorkflowNodeExecutionActiveMQPublisher:
         self._port = port or dify_config.WORKFLOW_LOG_ACTIVEMQ_PORT
         self._username = username if username is not None else dify_config.WORKFLOW_LOG_ACTIVEMQ_USERNAME
         self._password = password if password is not None else dify_config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD
-        self._destination = destination or dify_config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION
+        self._destination = destination or dify_config.WORKFLOW_NODE_EXECUTION_ACTIVEMQ_DESTINATION
         self._timeout = timeout if timeout is not None else dify_config.WORKFLOW_LOG_PUBLISH_TIMEOUT
         retries = max_retries if max_retries is not None else dify_config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES
         threshold = (
@@ -223,13 +223,13 @@ class WorkflowNodeExecutionActiveMQPublisher:
         )
 
 
-def get_workflow_node_execution_activemq_publisher() -> WorkflowNodeExecutionActiveMQPublisher:
+def _get_workflow_log_publisher(destination: str) -> WorkflowNodeExecutionActiveMQPublisher:
     key = _PublisherConfigKey(
         host=dify_config.WORKFLOW_LOG_ACTIVEMQ_HOST,
         port=dify_config.WORKFLOW_LOG_ACTIVEMQ_PORT,
         username=dify_config.WORKFLOW_LOG_ACTIVEMQ_USERNAME,
         password=dify_config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD,
-        destination=dify_config.WORKFLOW_LOG_ACTIVEMQ_DESTINATION,
+        destination=destination,
         timeout=dify_config.WORKFLOW_LOG_PUBLISH_TIMEOUT,
         max_retries=dify_config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES,
         slow_log_threshold=dify_config.WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD,
@@ -254,6 +254,14 @@ def get_workflow_node_execution_activemq_publisher() -> WorkflowNodeExecutionAct
         _publishers[key] = publisher
         atexit.register(publisher.close)
         return publisher
+
+
+def get_workflow_node_execution_activemq_publisher() -> WorkflowNodeExecutionActiveMQPublisher:
+    return _get_workflow_log_publisher(dify_config.WORKFLOW_NODE_EXECUTION_ACTIVEMQ_DESTINATION)
+
+
+def get_workflow_app_log_activemq_publisher() -> WorkflowNodeExecutionActiveMQPublisher:
+    return _get_workflow_log_publisher(dify_config.WORKFLOW_APP_LOG_ACTIVEMQ_DESTINATION)
 
 
 class ActiveMQWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository):

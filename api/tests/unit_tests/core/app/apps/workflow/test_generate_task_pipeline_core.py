@@ -789,7 +789,10 @@ class TestWorkflowGenerateTaskPipeline:
         pipeline._handle_workflow_failed_and_stop_events = lambda event, **kwargs: iter(["stopped"])
         assert list(pipeline._process_stream_response()) == ["stopped"]
 
-    def test_save_workflow_app_log_covers_invoke_from_variants(self):
+    def test_save_workflow_app_log_covers_invoke_from_variants(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.app.apps.workflow.generate_task_pipeline.is_workflow_log_async_enabled", lambda: False
+        )
         pipeline = _make_pipeline()
         pipeline._user_id = "user-id"
         added: list[object] = []
@@ -814,6 +817,59 @@ class TestWorkflowGenerateTaskPipeline:
         pipeline._application_generate_entity.invoke_from = InvokeFrom.WEB_APP
         pipeline._save_workflow_app_log(session=_Session(), workflow_run_id=None)
         assert len(added) == count_before
+
+    def test_save_workflow_app_log_publishes_when_async_enabled(self, monkeypatch):
+        pipeline = _make_pipeline()
+        pipeline._user_id = "user-id"
+        added: list[object] = []
+        published: list[dict] = []
+
+        class _Session:
+            def add(self, item):
+                added.append(item)
+
+        class _Publisher:
+            def publish(self, event):
+                published.append(event)
+
+        monkeypatch.setattr("core.app.apps.workflow.generate_task_pipeline.is_workflow_log_async_enabled", lambda: True)
+        monkeypatch.setattr(
+            "core.app.apps.workflow.generate_task_pipeline.get_workflow_app_log_activemq_publisher",
+            lambda: _Publisher(),
+        )
+
+        pipeline._application_generate_entity.invoke_from = InvokeFrom.SERVICE_API
+        pipeline._save_workflow_app_log(session=_Session(), workflow_run_id="run-id")
+
+        assert added == []
+        assert published[0]["event_type"] == "workflow_app_log.insert"
+        assert published[0]["payload"]["workflow_run_id"] == "run-id"
+        assert published[0]["payload"]["created_from"] == "service-api"
+
+    def test_save_workflow_app_log_falls_back_to_db_when_publish_fails(self, monkeypatch):
+        pipeline = _make_pipeline()
+        pipeline._user_id = "user-id"
+        added: list[object] = []
+
+        class _Session:
+            def add(self, item):
+                added.append(item)
+
+        class _Publisher:
+            def publish(self, event):
+                raise TimeoutError("broker down")
+
+        monkeypatch.setattr("core.app.apps.workflow.generate_task_pipeline.is_workflow_log_async_enabled", lambda: True)
+        monkeypatch.setattr(
+            "core.app.apps.workflow.generate_task_pipeline.get_workflow_app_log_activemq_publisher",
+            lambda: _Publisher(),
+        )
+
+        pipeline._application_generate_entity.invoke_from = InvokeFrom.SERVICE_API
+        pipeline._save_workflow_app_log(session=_Session(), workflow_run_id="run-id")
+
+        assert len(added) == 1
+        assert added[0].workflow_run_id == "run-id"
 
     def test_save_output_for_event_writes_draft_variables(self, monkeypatch):
         pipeline = _make_pipeline()
