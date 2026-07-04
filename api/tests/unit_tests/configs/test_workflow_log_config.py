@@ -28,7 +28,7 @@ def test_async_workflow_log_defaults_are_disabled(monkeypatch) -> None:
     assert config.WORKFLOW_LOG_ACTIVEMQ_PASSWORD == ""
     assert config.WORKFLOW_NODE_EXECUTION_ACTIVEMQ_DESTINATION == "/queue/dify.workflow.node-executions"
     assert config.WORKFLOW_APP_LOG_ACTIVEMQ_DESTINATION == "/queue/dify.workflow.app-logs"
-    assert config.WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE == 1
+    assert config.WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE == 4
     assert config.WORKFLOW_LOG_PUBLISH_TIMEOUT == 0.2
     assert config.WORKFLOW_LOG_PUBLISH_MAX_RETRIES == 1
     assert config.WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD == 0.5
