@@ -1340,7 +1340,7 @@ class WorkflowLogConfig(BaseSettings):
         description="ActiveMQ destination for workflow app log events",
     )
     WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE: int = Field(
-        default=8,
+        default=4,
         description="Number of ActiveMQ STOMP producer connections per API worker process",
     )
     WORKFLOW_LOG_PUBLISH_TIMEOUT: float = Field(default=0.2, description="Workflow log publish timeout in seconds")
