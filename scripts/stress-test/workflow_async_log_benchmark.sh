@@ -6,6 +6,7 @@ API_TOKEN=${API_TOKEN:-app-5pbHbXIMPKiI6uyVZXKhLmyy}
 DURATION=${DURATION:-1m}
 CONCURRENCY=${CONCURRENCY:-1000}
 TIMEOUT=${TIMEOUT:-120}
+WARMUP=${WARMUP:-5}
 COMPOSE_PROJECT=${COMPOSE_PROJECT:-dify-middlewares-dev}
 NETWORK=${NETWORK:-${COMPOSE_PROJECT}_default}
 OUT=${OUT:-/tmp/dify-load-$(date +%Y%m%d-%H%M%S)}
@@ -42,6 +43,15 @@ sample_pg() {
     sleep 2
   done
 }
+
+for i in $(seq 1 "$WARMUP"); do
+  curl -fsS -o /dev/null -m "$TIMEOUT" -X POST \
+    -H "Authorization: Bearer $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"inputs": {}, "response_mode": "blocking", "user": "warmup"}' \
+    "$API_URL" || true
+done
+sleep 3
 
 queue_json dify.workflow.node-executions "$OUT/node-before.json"
 queue_json dify.workflow.app-logs "$OUT/app-before.json"
