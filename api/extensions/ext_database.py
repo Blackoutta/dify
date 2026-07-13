@@ -1,6 +1,8 @@
 import logging
 
-import gevent
+from gevent import spawn_later
+from gevent.hub import Hub
+from greenlet import getcurrent
 from sqlalchemy import event
 from sqlalchemy.pool import Pool
 
@@ -25,6 +27,21 @@ def _safe_rollback(connection):
         logger.exception("Failed to rollback connection")
 
 
+def _is_gevent_hub_callback() -> bool:
+    return isinstance(getcurrent(), Hub)
+
+
+def _safe_pool_reset(dbapi_connection, reset_state) -> None:
+    if reset_state.terminate_only:
+        return
+
+    if _is_gevent_hub_callback():
+        spawn_later(0, lambda: _safe_rollback(dbapi_connection))
+        return
+
+    _safe_rollback(dbapi_connection)
+
+
 def _setup_gevent_compatibility():
     global _gevent_compatibility_setup  # pylint: disable=global-statement
 
@@ -34,18 +51,7 @@ def _setup_gevent_compatibility():
 
     @event.listens_for(Pool, "reset")
     def _safe_reset(dbapi_connection, connection_record, reset_state):  # pyright: ignore[reportUnusedFunction]
-        if reset_state.terminate_only:
-            return
-
-        # Safe rollback for connection
-        try:
-            hub = gevent.get_hub()
-            if hasattr(hub, "loop") and getattr(hub.loop, "in_callback", False):
-                gevent.spawn_later(0, lambda: _safe_rollback(dbapi_connection))
-            else:
-                _safe_rollback(dbapi_connection)
-        except (AttributeError, ImportError):
-            _safe_rollback(dbapi_connection)
+        _safe_pool_reset(dbapi_connection, reset_state)
 
     _gevent_compatibility_setup = True
 
