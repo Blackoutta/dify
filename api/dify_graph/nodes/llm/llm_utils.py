@@ -155,6 +155,7 @@ def fetch_prompt_messages(
                 memory=memory,
                 memory_config=memory_config,
                 model_instance=model_instance,
+                vision_enabled=vision_enabled,
             )
         )
 
@@ -430,6 +431,7 @@ def handle_memory_chat_mode(
     memory: PromptMessageMemory | None,
     memory_config: MemoryConfig | None,
     model_instance: ModelInstance,
+    vision_enabled: bool,
 ) -> Sequence[PromptMessage]:
     if not memory or not memory_config:
         return []
@@ -437,6 +439,7 @@ def handle_memory_chat_mode(
     return memory.get_history_prompt_messages(
         max_token_limit=rest_tokens,
         message_limit=memory_config.window.size if memory_config.window.enabled else None,
+        include_files=vision_enabled,
     )
 
 

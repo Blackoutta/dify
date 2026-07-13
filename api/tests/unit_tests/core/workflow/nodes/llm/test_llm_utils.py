@@ -10,7 +10,7 @@ from dify_graph.model_runtime.entities import (
 )
 from dify_graph.model_runtime.entities.message_entities import SystemPromptMessage
 from dify_graph.nodes.llm import llm_utils
-from dify_graph.nodes.llm.entities import LLMNodeChatModelMessage
+from dify_graph.nodes.llm.entities import LLMNodeChatModelMessage, MemoryConfig
 from dify_graph.nodes.llm.exc import NoPromptFoundError
 from dify_graph.runtime import VariablePool
 
@@ -64,6 +64,27 @@ def _fetch_prompt_messages_with_mocked_content(content):
             jinja2_variables=[],
             template_renderer=None,
         )
+
+
+def test_handle_memory_chat_mode_skips_files_when_vision_disabled():
+    memory = mock.MagicMock()
+    memory.get_history_prompt_messages.return_value = []
+    model_instance = mock.MagicMock(spec=ModelInstance)
+    memory_config = MemoryConfig(window=MemoryConfig.WindowConfig(enabled=True, size=3))
+
+    with mock.patch("dify_graph.nodes.llm.llm_utils.calculate_rest_token", return_value=2000):
+        llm_utils.handle_memory_chat_mode(
+            memory=memory,
+            memory_config=memory_config,
+            model_instance=model_instance,
+            vision_enabled=False,
+        )
+
+    memory.get_history_prompt_messages.assert_called_once_with(
+        max_token_limit=2000,
+        message_limit=3,
+        include_files=False,
+    )
 
 
 class TestTypeCoercionViaResolve:

@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from core.memory.token_buffer_memory import TokenBufferMemory
+from dify_graph.file import FileType
 from dify_graph.model_runtime.entities import (
     AssistantPromptMessage,
     ImagePromptMessageContent,
@@ -515,6 +516,42 @@ class TestGetHistoryPromptMessages:
             result = mem.get_history_prompt_messages()
 
         assert len(result) == 2  # one user + one assistant
+
+    def test_include_files_false_keeps_image_placeholder_without_building_files(self):
+        mem = self._make_memory()
+        msg = _make_message()
+        msg.parent_message_id = None
+        image_file = MagicMock(type=FileType.IMAGE)
+
+        call_count = {"n": 0}
+
+        def scalars_side_effect(stmt):
+            result = MagicMock()
+            if call_count["n"] == 0:
+                result.all.return_value = [msg]
+            elif call_count["n"] == 1:
+                result.all.return_value = [image_file]
+            else:
+                result.all.return_value = []
+            call_count["n"] += 1
+            return result
+
+        with (
+            patch("core.memory.token_buffer_memory.db") as mock_db,
+            patch(
+                "core.memory.token_buffer_memory.extract_thread_messages",
+                return_value=[msg],
+            ),
+            patch.object(mem, "_build_prompt_message_with_files") as mock_build,
+        ):
+            mock_db.session.scalars.side_effect = scalars_side_effect
+            result = mem.get_history_prompt_messages(include_files=False)
+
+        assert result == [
+            UserPromptMessage(content=f"{msg.query}\n[image]"),
+            AssistantPromptMessage(content=msg.answer),
+        ]
+        mock_build.assert_not_called()
 
     def test_message_limit_default_is_500(self):
         """When message_limit is None the stmt is limited to 500."""

@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from core.app.app_config.features.file_upload.manager import FileUploadConfigManager
 from core.model_manager import ModelInstance
 from core.prompt.utils.extract_thread_messages import extract_thread_messages
-from dify_graph.file import file_manager
+from dify_graph.file import FileType, file_manager
 from dify_graph.model_runtime.entities import (
     AssistantPromptMessage,
     ImagePromptMessageContent,
@@ -114,13 +114,23 @@ class TokenBufferMemory:
             else:
                 return AssistantPromptMessage(content=prompt_message_contents)
 
+    def _append_file_placeholders(self, text_content: str, message_files: Sequence[MessageFile]) -> str:
+        image_placeholders = ["[image]" for message_file in message_files if message_file.type == FileType.IMAGE]
+        if not image_placeholders:
+            return text_content
+        return "\n".join([text_content, *image_placeholders])
+
     def get_history_prompt_messages(
-        self, max_token_limit: int = 2000, message_limit: int | None = None
+        self,
+        max_token_limit: int = 2000,
+        message_limit: int | None = None,
+        include_files: bool = True,
     ) -> Sequence[PromptMessage]:
         """
         Get history prompt messages.
         :param max_token_limit: max token limit
         :param message_limit: message limit
+        :param include_files: whether to include historical message files in prompt messages
         """
         app_record = self.conversation.app
 
@@ -159,7 +169,7 @@ class TokenBufferMemory:
                 )
             ).all()
 
-            if user_files:
+            if user_files and include_files:
                 user_prompt_message = self._build_prompt_message_with_files(
                     message_files=user_files,
                     text_content=message.query,
@@ -168,6 +178,10 @@ class TokenBufferMemory:
                     is_user_message=True,
                 )
                 prompt_messages.append(user_prompt_message)
+            elif user_files:
+                prompt_messages.append(
+                    UserPromptMessage(content=self._append_file_placeholders(message.query, user_files))
+                )
             else:
                 prompt_messages.append(UserPromptMessage(content=message.query))
 
@@ -176,7 +190,7 @@ class TokenBufferMemory:
                 select(MessageFile).where(MessageFile.message_id == message.id, MessageFile.belongs_to == "assistant")
             ).all()
 
-            if assistant_files:
+            if assistant_files and include_files:
                 assistant_prompt_message = self._build_prompt_message_with_files(
                     message_files=assistant_files,
                     text_content=message.answer,
@@ -185,6 +199,10 @@ class TokenBufferMemory:
                     is_user_message=False,
                 )
                 prompt_messages.append(assistant_prompt_message)
+            elif assistant_files:
+                prompt_messages.append(
+                    AssistantPromptMessage(content=self._append_file_placeholders(message.answer, assistant_files))
+                )
             else:
                 prompt_messages.append(AssistantPromptMessage(content=message.answer))
 
