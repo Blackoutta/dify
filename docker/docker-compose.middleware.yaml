@@ -97,7 +97,9 @@ services:
 
   # The DifySandbox
   sandbox:
-    image: langgenius/dify-sandbox:0.2.14
+    # image: langgenius/dify-sandbox:0.2.15
+    # image: langgenius/dify-sandbox:0.2.14
+    image: dify-sandbox:main-20260705
     restart: always
     env_file:
       - ./middleware.env
@@ -113,6 +115,18 @@ services:
       HTTPS_PROXY: ${SANDBOX_HTTPS_PROXY:-http://ssrf_proxy:3128}
       SANDBOX_PORT: ${SANDBOX_PORT:-8194}
       PIP_MIRROR_URL: ${PIP_MIRROR_URL:-}
+      ALLOWED_SYSCALLS: "79,22"
+      SANDBOX_PPROF_PORT: ${SANDBOX_PPROF_PORT:-6060}
+      PYTHON_WARM_POOL_ENABLED: ${PYTHON_WARM_POOL_ENABLED:-false}
+      PYTHON_WARM_POOL_SIZE: ${PYTHON_WARM_POOL_SIZE:-128}
+      PYTHON_WARM_POOL_REFILL_CONCURRENCY: ${PYTHON_WARM_POOL_REFILL_CONCURRENCY:-4}
+      PYTHON_WARM_POOL_REFILL_INTERVAL_MS: ${PYTHON_WARM_POOL_REFILL_INTERVAL_MS:-500}
+      PYTHON_WARM_POOL_REFILL_BATCH_SIZE: ${PYTHON_WARM_POOL_REFILL_BATCH_SIZE:-4}
+      PYTHON_WARM_POOL_LOW_WATERMARK: ${PYTHON_WARM_POOL_LOW_WATERMARK:-16}
+      PYTHON_WARM_POOL_ACQUIRE_TIMEOUT_MS: ${PYTHON_WARM_POOL_ACQUIRE_TIMEOUT_MS:-10}
+    ports:
+      - "${EXPOSE_SANDBOX_DIRECT_PORT:-8195}:${SANDBOX_PORT:-8194}"
+      - "${EXPOSE_SANDBOX_PPROF_PORT:-6060}:${SANDBOX_PPROF_PORT:-6060}"
     volumes:
       - ./volumes/sandbox/dependencies:/dependencies
       - ./volumes/sandbox/conf:/conf
@@ -120,6 +134,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8194/health"]
     networks:
       - ssrf_proxy_network
+      - default
 
   # plugin daemon
   plugin_daemon:

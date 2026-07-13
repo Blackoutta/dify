@@ -1,0 +1,18 @@
+#!/bin/bash
+
+set -x
+
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+cd "$SCRIPT_DIR/../api"
+
+GEVENT_SUPPORT=True \
+OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
+LOG_OUTPUT_FORMAT=text \
+LOG_FORMAT='%(asctime)s,%(msecs)d %(levelname)-2s [%(filename)s:%(lineno)d] %(req_id)s %(message)s' \
+.venv/bin/python -m gunicorn \
+  --bind 0.0.0.0:5001 \
+  --workers 11 \
+  --worker-class gevent \
+  --worker-connections 500 \
+  --timeout 200 \
+  app:app
