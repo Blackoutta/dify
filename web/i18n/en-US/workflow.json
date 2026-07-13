@@ -451,6 +451,7 @@
   "nodes.common.retry.ms": "ms",
   "nodes.common.retry.retries": "{{num}} Retries",
   "nodes.common.retry.retry": "Retry",
+  "nodes.common.retry.retryDetectedInProcessData": "Exception retry detected. Details are available in Process Data.",
   "nodes.common.retry.retryFailed": "Retry failed",
   "nodes.common.retry.retryFailedTimes": "{{times}} retries failed",
   "nodes.common.retry.retryInterval": "retry interval",

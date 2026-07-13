@@ -97,6 +97,8 @@ const NodePanel: FC<Props> = ({
   const isRetryNode = hasRetryNode(nodeInfo.node_type) && !!nodeInfo.retryDetail?.length
   const isAgentNode = nodeInfo.node_type === BlockEnum.Agent && !!nodeInfo.agentLog?.length
   const isToolNode = nodeInfo.node_type === BlockEnum.Tool && !!nodeInfo.agentLog?.length
+  const retryErrors = Array.isArray(nodeInfo.process_data?.retry_errors) ? nodeInfo.process_data.retry_errors : []
+  const isRetrySucceeded = nodeInfo.status === 'succeeded' && retryErrors.length > 0
 
   const inputsTitle = useMemo(() => {
     let text = t('common.input', { ns: 'workflow' })
@@ -151,8 +153,11 @@ const NodePanel: FC<Props> = ({
               {`${getTime(nodeInfo.elapsed_time || 0)}`}
             </div>
           )}
-          {nodeInfo.status === 'succeeded' && (
+          {nodeInfo.status === 'succeeded' && !isRetrySucceeded && (
             <RiCheckboxCircleFill className="ml-2 h-3.5 w-3.5 shrink-0 text-text-success" />
+          )}
+          {isRetrySucceeded && (
+            <RiAlertFill className={cn('ml-2 h-4 w-4 shrink-0 text-text-warning-secondary', inMessage && 'h-3.5 w-3.5')} />
           )}
           {nodeInfo.status === 'failed' && (
             <RiErrorWarningFill className="ml-2 h-3.5 w-3.5 shrink-0 text-text-destructive" />
@@ -223,6 +228,11 @@ const NodePanel: FC<Props> = ({
                   </a>
                 </StatusContainer>
               )}
+              {isRetrySucceeded && (
+                <StatusContainer status="exception">
+                  {t('nodes.common.retry.retrySuccessful', { ns: 'workflow' })}
+                </StatusContainer>
+              )}
               {nodeInfo.status === 'failed' && (
                 <StatusContainer status="failed">
                   {nodeInfo.error}
@@ -253,6 +263,13 @@ const NodePanel: FC<Props> = ({
             )}
             {nodeInfo.process_data && (
               <div className={cn('mb-1')}>
+                {isRetrySucceeded && (
+                  <div className="mb-1">
+                    <StatusContainer status="exception">
+                      {t('nodes.common.retry.retryDetectedInProcessData', { ns: 'workflow' })}
+                    </StatusContainer>
+                  </div>
+                )}
                 <CodeEditor
                   readOnly
                   title={<div>{processDataTitle}</div>}

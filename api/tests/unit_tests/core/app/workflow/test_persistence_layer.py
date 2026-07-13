@@ -270,6 +270,105 @@ class TestWorkflowPersistenceLayer:
         layer._handle_node_retry(retry_event)
         assert node_repo.saved_exec_data
 
+    def test_retry_errors_are_preserved_after_node_succeeds(self):
+        layer, _, node_repo, _ = _make_layer()
+        layer._handle_graph_run_started()
+
+        start_event = NodeRunStartedEvent(
+            id="exec",
+            node_id="node",
+            node_type=BuiltinNodeTypes.LLM,
+            node_title="LLM",
+            start_at=_naive_utc_now(),
+        )
+        layer._handle_node_started(start_event)
+
+        retry_event = NodeRunRetryEvent(
+            id="exec",
+            node_id="node",
+            node_type=BuiltinNodeTypes.LLM,
+            node_title="LLM",
+            start_at=_naive_utc_now(),
+            error="temporary provider error",
+            retry_index=1,
+        )
+        layer._handle_node_retry(retry_event)
+
+        success_event = NodeRunSucceededEvent(
+            id="exec",
+            node_id="node",
+            node_type=BuiltinNodeTypes.LLM,
+            start_at=_naive_utc_now(),
+            node_run_result=NodeRunResult(
+                inputs={"prompt": "hello"},
+                process_data={"model": "test-model"},
+                outputs={"text": "ok"},
+                metadata={},
+            ),
+        )
+        layer._handle_node_succeeded(success_event)
+
+        saved_execution = node_repo.saved_exec_data[-1]
+        assert saved_execution.status == WorkflowNodeExecutionStatus.SUCCEEDED
+        assert saved_execution.process_data == {
+            "model": "test-model",
+            "retry_errors": [
+                {
+                    "retry_index": 1,
+                    "error": "temporary provider error",
+                }
+            ],
+        }
+
+    def test_retry_errors_include_node_result_details(self):
+        layer, _, node_repo, _ = _make_layer()
+        layer._handle_graph_run_started()
+
+        start_event = NodeRunStartedEvent(
+            id="exec",
+            node_id="node",
+            node_type=BuiltinNodeTypes.HTTP_REQUEST,
+            node_title="HTTP",
+            start_at=_naive_utc_now(),
+        )
+        layer._handle_node_started(start_event)
+
+        retry_event = NodeRunRetryEvent(
+            id="exec",
+            node_id="node",
+            node_type=BuiltinNodeTypes.HTTP_REQUEST,
+            node_title="HTTP",
+            start_at=_naive_utc_now(),
+            error="Request failed with status code 500",
+            retry_index=1,
+            node_run_result=NodeRunResult(
+                process_data={"request": "GET /test HTTP/1.1"},
+                outputs={
+                    "status_code": 500,
+                    "body": '{"status": 500, "message": "fixed 500 error"}',
+                },
+                error="Request failed with status code 500",
+                error_type="HTTPResponseCodeError",
+            ),
+        )
+        layer._handle_node_retry(retry_event)
+
+        saved_execution = node_repo.saved_exec_data[-1]
+        assert saved_execution.process_data == {
+            "request": "GET /test HTTP/1.1",
+            "retry_errors": [
+                {
+                    "retry_index": 1,
+                    "error": "Request failed with status code 500",
+                    "error_type": "HTTPResponseCodeError",
+                    "outputs": {
+                        "status_code": 500,
+                        "body": '{"status": 500, "message": "fixed 500 error"}',
+                    },
+                }
+            ],
+        }
+
     def test_handle_node_result_events_update_execution(self):
         layer, _, node_repo, _ = _make_layer()
         layer._handle_graph_run_started()

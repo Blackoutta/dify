@@ -47,6 +47,8 @@ from dify_graph.repositories.workflow_execution_repository import WorkflowExecut
 from dify_graph.repositories.workflow_node_execution_repository import WorkflowNodeExecutionRepository
 from libs.datetime_utils import naive_utc_now
 
+RETRY_ERRORS_PROCESS_DATA_KEY = "retry_errors"
+
 
 @dataclass(slots=True)
 class PersistenceWorkflowInfo:
@@ -263,6 +265,7 @@ class WorkflowPersistenceLayer(GraphEngineLayer):
         domain_execution = self._get_node_execution(event.id)
         domain_execution.status = WorkflowNodeExecutionStatus.RETRY
         domain_execution.error = event.error
+        self._append_retry_error(domain_execution, event)
         self._workflow_node_execution_repository.save(domain_execution)
         self._workflow_node_execution_repository.save_execution_data(domain_execution)
 
@@ -351,6 +354,34 @@ class WorkflowPersistenceLayer(GraphEngineLayer):
         execution.outputs = execution.outputs or runtime_state.outputs
         execution.exceptions_count = runtime_state.exceptions_count
 
+    def _append_retry_error(self, domain_execution: WorkflowNodeExecution, event: NodeRunRetryEvent) -> None:
+        process_data = dict(domain_execution.process_data or event.node_run_result.process_data or {})
+        retry_errors = list(process_data.get(RETRY_ERRORS_PROCESS_DATA_KEY) or [])
+        retry_error: dict[str, Any] = {
+            "retry_index": event.retry_index,
+            "error": event.node_run_result.error or event.error,
+        }
+        if event.node_run_result.error_type:
+            retry_error["error_type"] = event.node_run_result.error_type
+        if event.node_run_result.outputs:
+            retry_error["outputs"] = dict(event.node_run_result.outputs)
+        retry_errors.append(retry_error)
+        process_data[RETRY_ERRORS_PROCESS_DATA_KEY] = retry_errors
+        domain_execution.process_data = process_data
+
+    def _merge_retry_errors(
+        self,
+        existing_process_data: Mapping[str, Any] | None,
+        next_process_data: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any] | None:
+        existing_retry_errors = (existing_process_data or {}).get(RETRY_ERRORS_PROCESS_DATA_KEY)
+        if not existing_retry_errors:
+            return next_process_data
+
+        merged_process_data = dict(next_process_data or {})
+        merged_process_data[RETRY_ERRORS_PROCESS_DATA_KEY] = existing_retry_errors
+        return merged_process_data
+
     def _update_node_execution(
         self,
         domain_execution: WorkflowNodeExecution,
@@ -372,9 +403,10 @@ class WorkflowPersistenceLayer(GraphEngineLayer):
             domain_execution.error = error
 
         if update_outputs:
+            process_data = self._merge_retry_errors(domain_execution.process_data, node_result.process_data)
             domain_execution.update_from_mapping(
                 inputs=node_result.inputs,
-                process_data=node_result.process_data,
+                process_data=process_data,
                 outputs=node_result.outputs,
                 metadata=node_result.metadata,
             )
