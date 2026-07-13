@@ -30,6 +30,7 @@ from core.ops.entities.trace_entity import (
     WorkflowTraceInfo,
 )
 from core.ops.weave_trace.entities.weave_trace_entity import WeaveTraceModel
+from core.ops.workflow_trace_snapshots import workflow_node_executions_from_snapshots
 from core.repositories import DifyCoreRepositoryFactory
 from dify_graph.enums import BuiltinNodeTypes, WorkflowNodeExecutionMetadataKey
 from extensions.ext_database import db
@@ -145,25 +146,27 @@ class WeaveDataTrace(BaseTraceInstance):
         self.start_call(workflow_run, parent_run_id=trace_info.message_id)
 
         # through workflow_run_id get all_nodes_execution using repository
-        session_factory = sessionmaker(bind=db.engine)
-        # Find the app's creator account
-        app_id = trace_info.metadata.get("app_id")
-        if not app_id:
-            raise ValueError("No app_id found in trace_info metadata")
+        workflow_node_executions = workflow_node_executions_from_snapshots(trace_info)
+        if workflow_node_executions is None:
+            session_factory = sessionmaker(bind=db.engine)
+            # Find the app's creator account
+            app_id = trace_info.metadata.get("app_id")
+            if not app_id:
+                raise ValueError("No app_id found in trace_info metadata")
 
-        service_account = self.get_service_account_with_tenant(app_id)
+            service_account = self.get_service_account_with_tenant(app_id)
 
-        workflow_node_execution_repository = DifyCoreRepositoryFactory.create_workflow_node_execution_repository(
-            session_factory=session_factory,
-            user=service_account,
-            app_id=app_id,
-            triggered_from=WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
-        )
+            workflow_node_execution_repository = DifyCoreRepositoryFactory.create_workflow_node_execution_repository(
+                session_factory=session_factory,
+                user=service_account,
+                app_id=app_id,
+                triggered_from=WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
+            )
 
-        # Get all executions for this workflow run
-        workflow_node_executions = workflow_node_execution_repository.get_by_workflow_run(
-            workflow_run_id=trace_info.workflow_run_id
-        )
+            # Get all executions for this workflow run
+            workflow_node_executions = workflow_node_execution_repository.get_by_workflow_run(
+                workflow_run_id=trace_info.workflow_run_id
+            )
 
         # rearrange workflow_node_executions by starting time
         workflow_node_executions = sorted(workflow_node_executions, key=lambda x: x.created_at)

@@ -76,6 +76,7 @@ class DifyCoreRepositoryFactory:
         user: Union[Account, EndUser],
         app_id: str,
         triggered_from: WorkflowNodeExecutionTriggeredFrom,
+        workflow_triggered_from: WorkflowRunTriggeredFrom | None = None,
     ) -> WorkflowNodeExecutionRepository:
         """
         Create a WorkflowNodeExecutionRepository instance based on configuration.
@@ -85,6 +86,7 @@ class DifyCoreRepositoryFactory:
             user: Account or EndUser object
             app_id: Application ID
             triggered_from: Source of the execution trigger
+            workflow_triggered_from: Source of the workflow run trigger, used to keep debugger logs synchronous
 
         Returns:
             Configured WorkflowNodeExecutionRepository instance
@@ -92,6 +94,22 @@ class DifyCoreRepositoryFactory:
         Raises:
             RepositoryImportError: If the configured repository cannot be created
         """
+        if (
+            dify_config.WORKFLOW_LOG_ASYNC_ENABLED
+            and dify_config.WORKFLOW_LOG_QUEUE_PROVIDER == "activemq"
+            and triggered_from == WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN
+            and workflow_triggered_from == WorkflowRunTriggeredFrom.APP_RUN
+        ):
+            from core.repositories.workflow_node_execution_activemq_repository import (
+                ActiveMQWorkflowNodeExecutionRepository,
+            )
+
+            return ActiveMQWorkflowNodeExecutionRepository(
+                user=user,
+                app_id=app_id,
+                triggered_from=triggered_from,
+            )
+
         class_path = dify_config.CORE_WORKFLOW_NODE_EXECUTION_REPOSITORY
 
         try:

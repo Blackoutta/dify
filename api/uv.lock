@@ -1542,6 +1542,7 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "sseclient-py" },
     { name = "starlette" },
+    { name = "stomp-py" },
     { name = "tiktoken" },
     { name = "transformers" },
     { name = "unstructured", extra = ["docx", "epub", "md", "ppt", "pptx"] },
@@ -1745,6 +1746,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = "~=2.0.29" },
     { name = "sseclient-py", specifier = "~=1.9.0" },
     { name = "starlette", specifier = "==1.0.0" },
+    { name = "stomp-py", specifier = ">=9.0.0" },
     { name = "tiktoken", specifier = "~=0.12.0" },
     { name = "transformers", specifier = "~=5.3.0" },
     { name = "unstructured", extras = ["docx", "epub", "md", "ppt", "pptx"], specifier = "~=0.21.5" },
@@ -1894,6 +1896,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/91/9b/4a2ea29aeba62471211598dac5d96825bb49348fa07e906ea930394a83ce/docker-7.1.0.tar.gz", hash = "sha256:ad8c70e6e3f8926cb8a92619b832b4ea5299e2831c14284663184e200546fa6c", size = 117834, upload-time = "2024-05-23T11:13:57.216Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e3/26/57c6fb270950d476074c087527a558ccb6f4436657314bfb6cdf484114c4/docker-7.1.0-py3-none-any.whl", hash = "sha256:c96b93b7f0a746f9e77d325bcfb87422a3d8bd4f03136ae8a85b37f1898d5fc0", size = 147774, upload-time = "2024-05-23T11:13:55.01Z" },
+]
+
+[[package]]
+name = "docopt-ng"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/50/8d6806cf13138127692ae6ff79ddeb4e25eb3b0bcc3c1bd033e7e04531a9/docopt_ng-0.9.0.tar.gz", hash = "sha256:91c6da10b5bb6f2e9e25345829fb8278c78af019f6fc40887ad49b060483b1d7", size = 32264, upload-time = "2023-05-30T20:46:25.064Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/4a/c3b77fc1a24510b08918b43a473410c0168f6e657118807015f1f1edceea/docopt_ng-0.9.0-py3-none-any.whl", hash = "sha256:bfe4c8b03f9fca424c24ee0b4ffa84bf7391cb18c29ce0f6a8227a3b01b81ff9", size = 16689, upload-time = "2023-05-30T20:46:45.294Z" },
 ]
 
 [[package]]
@@ -6319,6 +6330,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cded50b7fe44e850315d039f28b15901ab44839e70b593/starlette-1.0.0.tar.gz", hash = "sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149", size = 2655289, upload-time = "2026-03-22T18:29:46.779Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651, upload-time = "2026-03-22T18:29:45.111Z" },
+]
+
+[[package]]
+name = "stomp-py"
+version = "9.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "docopt-ng" },
+    { name = "websocket-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3f/9d/2eac45f75ce1f9708cf23c5361e74d0b855013d842d3c0aef64ce0667405/stomp_py-9.0.0.tar.gz", hash = "sha256:77b63fdd6cb2fb5e3d7032c5e1cde70c005f498d6096b77827efe71913196464", size = 39701, upload-time = "2026-05-12T19:05:15.221Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/99/b010daaf1db86ea6ff3b831e70a5484bfe9c4fbf2f5f2ad6578160c56917/stomp_py-9.0.0-py3-none-any.whl", hash = "sha256:d115c85950b92dad358d11bc361b23d23994d21ff7eef50119f487f718ea4be2", size = 44242, upload-time = "2026-05-12T19:05:16.657Z" },
 ]
 
 [[package]]

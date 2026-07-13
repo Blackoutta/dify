@@ -215,6 +215,7 @@ class WorkflowAppGenerator(BaseAppGenerator):
             user=user,
             app_id=application_generate_entity.app_config.app_id,
             triggered_from=WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
+            workflow_triggered_from=workflow_triggered_from,
         )
 
         return self._generate(

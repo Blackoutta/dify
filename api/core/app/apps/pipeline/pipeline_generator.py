@@ -214,6 +214,7 @@ class PipelineGenerator(BaseAppGenerator):
                 user=user,
                 app_id=application_generate_entity.app_config.app_id,
                 triggered_from=WorkflowNodeExecutionTriggeredFrom.RAG_PIPELINE_RUN,
+                workflow_triggered_from=workflow_triggered_from,
             )
             if invoke_from == InvokeFrom.DEBUGGER or is_retry:
                 return self._generate(

@@ -938,6 +938,7 @@ class WorkflowNodeExecutionModel(Base):  # This model is expected to have `offlo
     created_by_role: Mapped[CreatorUserRole] = mapped_column(EnumText(CreatorUserRole, length=255))
     created_by: Mapped[str] = mapped_column(StringUUID)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    state_version: Mapped[int | None] = mapped_column(sa.BigInteger, nullable=True)
 
     offload_data: Mapped[list["WorkflowNodeExecutionOffload"]] = orm.relationship(
         "WorkflowNodeExecutionOffload",

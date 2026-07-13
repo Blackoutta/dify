@@ -487,6 +487,27 @@ class TestNodeExecutionRelationships:
         assert node_execution.node_type == BuiltinNodeTypes.START
         assert node_execution.index == 1
 
+    def test_node_execution_state_version_is_nullable(self):
+        """Test node execution state_version is optional for existing rows."""
+        # Act
+        node_execution = WorkflowNodeExecutionModel(
+            tenant_id="tenant-id",
+            app_id="app-id",
+            workflow_id="workflow-id",
+            triggered_from=WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
+            workflow_run_id="run-id",
+            index=1,
+            node_id="node-id",
+            node_type="llm",
+            title="LLM",
+            status="running",
+            created_by_role=CreatorUserRole.ACCOUNT,
+            created_by="user-id",
+        )
+
+        # Assert
+        assert node_execution.state_version is None
+
     def test_node_execution_with_predecessor_relationship(self):
         """Test node execution with predecessor node relationship."""
         # Arrange

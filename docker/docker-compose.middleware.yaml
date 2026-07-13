@@ -214,6 +214,90 @@ services:
       - ssrf_proxy_network
       - default
 
+  activemq:
+    image: apache/activemq-classic:${ACTIVEMQ_IMAGE_TAG:-latest}
+    profiles:
+      - ""
+      - activemq
+    restart: always
+    env_file:
+      - ./middleware.env
+    volumes:
+      - ${ACTIVEMQ_HOST_VOLUME:-./volumes/activemq}:/opt/apache-activemq/data
+    command: >
+      /bin/sh -c '
+      if ! grep -q "transport.defaultHeartBeat" /opt/apache-activemq/conf/activemq.xml; then
+        sed -i "s#stomp://0.0.0.0:61613?maximumConnections=1000\&amp;wireFormat.maxFrameSize=104857600#stomp://0.0.0.0:61613?maximumConnections=1000\&amp;wireFormat.maxFrameSize=104857600\&amp;transport.defaultHeartBeat=${ACTIVEMQ_STOMP_DEFAULT_HEARTBEAT:-30000,30000}\&amp;transport.hbGracePeriodMultiplier=${ACTIVEMQ_STOMP_HB_GRACE_PERIOD_MULTIPLIER:-2.0}#" /opt/apache-activemq/conf/activemq.xml;
+      fi;
+      exec /opt/apache-activemq/bin/activemq console
+      '
+    ports:
+      - "${EXPOSE_ACTIVEMQ_STOMP_PORT:-61613}:61613"
+      - "${EXPOSE_ACTIVEMQ_OPENWIRE_PORT:-61616}:61616"
+      - "${EXPOSE_ACTIVEMQ_WEB_PORT:-8161}:8161"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/61613'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  dify_log_consumer:
+    image: ${DIFY_LOG_CONSUMER_IMAGE:-dify-log-consumer:1.13.3-arm64}
+    profiles:
+      - ""
+      - activemq
+    restart: always
+    env_file:
+      - ./middleware.env
+    depends_on:
+      db_postgres:
+        condition: service_healthy
+      activemq:
+        condition: service_healthy
+    deploy:
+      replicas: 3
+    environment:
+      CONSUMER_QUEUE_PROVIDER: ${CONSUMER_QUEUE_PROVIDER:-activemq}
+      CONSUMER_NODE_EXECUTION_QUEUE_DESTINATION: ${CONSUMER_NODE_EXECUTION_QUEUE_DESTINATION:-/queue/dify.workflow.node-executions}
+      CONSUMER_NODE_EXECUTION_DLQ_DESTINATION: ${CONSUMER_NODE_EXECUTION_DLQ_DESTINATION:-/queue/dify.workflow.node-executions.dlq}
+      CONSUMER_APP_LOG_QUEUE_DESTINATION: ${CONSUMER_APP_LOG_QUEUE_DESTINATION:-/queue/dify.workflow.app-logs}
+      CONSUMER_APP_LOG_DLQ_DESTINATION: ${CONSUMER_APP_LOG_DLQ_DESTINATION:-/queue/dify.workflow.app-logs.dlq}
+      ACTIVEMQ_HOST: ${ACTIVEMQ_HOST:-activemq}
+      ACTIVEMQ_PORT: ${ACTIVEMQ_PORT:-61613}
+      ACTIVEMQ_USERNAME: ${ACTIVEMQ_USERNAME:-}
+      ACTIVEMQ_PASSWORD: ${ACTIVEMQ_PASSWORD:-}
+      ACTIVEMQ_TLS_ENABLED: ${ACTIVEMQ_TLS_ENABLED:-false}
+      ACTIVEMQ_CONNECT_TIMEOUT: ${ACTIVEMQ_CONNECT_TIMEOUT:-5s}
+      ACTIVEMQ_HEARTBEAT_SEND: ${ACTIVEMQ_HEARTBEAT_SEND:-30s}
+      ACTIVEMQ_HEARTBEAT_RECEIVE: ${ACTIVEMQ_HEARTBEAT_RECEIVE:-0s}
+      ACTIVEMQ_PREFETCH_SIZE: ${ACTIVEMQ_PREFETCH_SIZE:-500}
+      ACTIVEMQ_RECONNECT_INITIAL_INTERVAL: ${ACTIVEMQ_RECONNECT_INITIAL_INTERVAL:-1s}
+      ACTIVEMQ_RECONNECT_MAX_INTERVAL: ${ACTIVEMQ_RECONNECT_MAX_INTERVAL:-30s}
+      DB_DIALECT: ${DB_DIALECT:-postgres}
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:difyai123456@db_postgres:5432/dify?sslmode=disable}
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-20}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-10}
+      DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
+      DB_SLOW_QUERY_THRESHOLD: ${DB_SLOW_QUERY_THRESHOLD:-200ms}
+      CONSUMER_NODE_EXECUTION_BATCH_SIZE: ${CONSUMER_NODE_EXECUTION_BATCH_SIZE:-250}
+      CONSUMER_NODE_EXECUTION_FLUSH_INTERVAL: ${CONSUMER_NODE_EXECUTION_FLUSH_INTERVAL:-1s}
+      CONSUMER_NODE_EXECUTION_MAX_IN_FLIGHT_BATCHES: ${CONSUMER_NODE_EXECUTION_MAX_IN_FLIGHT_BATCHES:-5}
+      CONSUMER_APP_LOG_BATCH_SIZE: ${CONSUMER_APP_LOG_BATCH_SIZE:-500}
+      CONSUMER_APP_LOG_FLUSH_INTERVAL: ${CONSUMER_APP_LOG_FLUSH_INTERVAL:-1s}
+      CONSUMER_APP_LOG_MAX_IN_FLIGHT_BATCHES: ${CONSUMER_APP_LOG_MAX_IN_FLIGHT_BATCHES:-2}
+      CONSUMER_MAX_REDELIVERIES: ${CONSUMER_MAX_REDELIVERIES:-10}
+      CONSUMER_DLQ_INCLUDE_ORIGINAL_BODY: ${CONSUMER_DLQ_INCLUDE_ORIGINAL_BODY:-true}
+      CONSUMER_SHUTDOWN_TIMEOUT: ${CONSUMER_SHUTDOWN_TIMEOUT:-30s}
+      CONSUMER_MAX_MESSAGE_BYTES: ${CONSUMER_MAX_MESSAGE_BYTES:-0}
+      CONSUMER_MAX_DLQ_BODY_BYTES: ${CONSUMER_MAX_DLQ_BODY_BYTES:-0}
+      WORKFLOW_VARIABLE_TRUNCATION_MAX_SIZE: ${WORKFLOW_VARIABLE_TRUNCATION_MAX_SIZE:-1024000}
+      WORKFLOW_VARIABLE_TRUNCATION_STRING_LENGTH: ${WORKFLOW_VARIABLE_TRUNCATION_STRING_LENGTH:-100000}
+      WORKFLOW_VARIABLE_TRUNCATION_ARRAY_LENGTH: ${WORKFLOW_VARIABLE_TRUNCATION_ARRAY_LENGTH:-1000}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      METRICS_ADDR: ${METRICS_ADDR:-:9090}
+      METRICS_PATH: ${METRICS_PATH:-/metrics}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
   # The Weaviate vector store.
   weaviate:
     image: semitechnologies/weaviate:1.27.0

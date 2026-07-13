@@ -618,6 +618,7 @@ class TraceTask:
             message_id=message_id,
             start_time=workflow_run.created_at,
             end_time=workflow_run.finished_at,
+            node_execution_snapshots=self.kwargs.get("node_execution_snapshots") or [],
         )
         return workflow_trace_info
 

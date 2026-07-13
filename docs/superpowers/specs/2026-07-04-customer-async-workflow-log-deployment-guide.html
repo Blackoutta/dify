@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026-07-04-customer-async-workflow-log-deployment-guide</title>
+<style>
+:root { color-scheme: light; }
+body { margin: 0; background: #f6f7f9; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.72; }
+.page { max-width: 980px; margin: 40px auto; padding: 56px 72px; background: #fff; border-radius: 18px; box-shadow: 0 20px 60px rgba(15, 23, 42, .08); }
+h1 { font-size: 32px; margin: 0 0 28px; color: #111827; letter-spacing: -.02em; }
+h2 { margin-top: 42px; padding-bottom: 8px; border-bottom: 1px solid #e5e7eb; color: #111827; }
+h3 { margin-top: 28px; color: #1f2937; }
+p, li { font-size: 15.5px; }
+blockquote { margin: 18px 0; padding: 12px 18px; border-left: 4px solid #2563eb; background: #eff6ff; color: #1e3a8a; }
+code { padding: 2px 6px; border-radius: 6px; background: #f3f4f6; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.92em; }
+pre { overflow-x: auto; padding: 16px 18px; border-radius: 12px; background: #0f172a; color: #e5e7eb; line-height: 1.55; }
+pre code { padding: 0; background: transparent; color: inherit; }
+table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+th, td { border: 1px solid #e5e7eb; padding: 10px 12px; text-align: left; vertical-align: top; }
+th { background: #f9fafb; color: #111827; }
+a { color: #2563eb; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid #e5e7eb; margin: 32px 0; }
+@media print { body { background: #fff; } .page { margin: 0; padding: 24mm 18mm; max-width: none; border-radius: 0; box-shadow: none; } h2 { break-after: avoid; } pre, blockquote, table { break-inside: avoid; } }
+</style>
+</head>
+<body><main class="page"><h1 id="workflow">客户环境异步 Workflow 日志部署指南</h1>
+<h2 id="_1">目标</h2>
+<p>客户当前有 3 台 VM 部署 Dify，并在前面自建负载均衡。此次上线目标是把生产 workflow 的 node execution log 和 app log 从 API 同步写 DB 改为：</p>
+<pre><code class="language-text">Dify API/worker -&gt; ActiveMQ -&gt; dify-log-consumer -&gt; 外部 PostgreSQL
+</code></pre>
+<p>这样可以降低 API 请求路径上的 DB 写入压力。</p>
+<h2 id="_2">部署拓扑</h2>
+<p>推荐每台 VM 都部署：</p>
+<ul>
+<li>新版 <code>dify-api</code> 镜像（替换原 api / worker / beat 使用的 api 镜像）</li>
+<li>1 个本机 ActiveMQ</li>
+<li>3 个 <code>dify-log-consumer</code> 副本</li>
+</ul>
+<p>推荐把 <code>activemq</code> 和 <code>dify_log_consumer</code> <strong>直接加到客户现有的 Dify <code>docker-compose.yaml</code> 里</strong>，和 <code>api</code> / <code>worker</code> 使用同一个 Compose project 的默认网络。这样 API 和 consumer 都能通过服务名访问 ActiveMQ：</p>
+<pre><code class="language-text">api / worker -&gt; activemq:61613
+consumer -&gt; activemq:61613
+</code></pre>
+<p>每台 VM 的 API 只发到本机 compose 网络里的 <code>activemq:61613</code>。每台 VM 上的 consumer 只消费本机 ActiveMQ，再写入同一个外部 PostgreSQL。</p>
+<blockquote>
+<p>不建议暂时把 ActiveMQ 做多实例集群；先按每台 VM 本地一个 broker 的方式上线，最简单也最少改动。</p>
+</blockquote>
+<h2 id="_3">镜像</h2>
+<p>待交付两个 amd64 镜像：</p>
+<pre><code class="language-text">dify-api:async-workflow-logs-amd64
+dify-log-consumer:async-workflow-logs-amd64
+</code></pre>
+<p>客户需要把原 compose 里的 api 镜像替换为：</p>
+<pre><code class="language-yaml">api:
+  image: dify-api:async-workflow-logs-amd64
+
+worker:
+  image: dify-api:async-workflow-logs-amd64
+
+worker_beat:
+  image: dify-api:async-workflow-logs-amd64
+</code></pre>
+<p>如果还有其他使用 <code>langgenius/dify-api:1.13.3</code> 的服务，也应一起替换。</p>
+<h2 id="_4">数据库迁移</h2>
+<p>新版 Dify 镜像启动时会根据 <code>MIGRATION_ENABLED=true</code> 自动执行：</p>
+<pre><code class="language-bash">flask upgrade-db
+</code></pre>
+<p>Dify 已有 DB migration lock，同一套 Redis 下多台 VM 同时重启时，只有一个实例会真正执行 migration，其他实例会跳过。</p>
+<p>客户需要确认 <code>.env</code> 中：</p>
+<pre><code class="language-env">MIGRATION_ENABLED=true
+</code></pre>
+<p>如果客户当前关闭了自动 migration，则上线前需要手动执行一次：</p>
+<pre><code class="language-bash">docker compose run --rm api flask upgrade-db
+</code></pre>
+<h2 id="dify-env">Dify <code>.env</code> 新增变量</h2>
+<p>客户只替换镜像、不更新 <code>.env.example</code>，所以需要手动在现有 <code>.env</code> 增加以下变量。</p>
+<pre><code class="language-env"># 开启 workflow 异步日志。node execution log 和 workflow_app_logs 共用这个开关。
+WORKFLOW_LOG_ASYNC_ENABLED=true
+WORKFLOW_LOG_QUEUE_PROVIDER=activemq
+
+# API/worker 连接本机 compose 里的 ActiveMQ。
+WORKFLOW_LOG_ACTIVEMQ_HOST=activemq
+WORKFLOW_LOG_ACTIVEMQ_PORT=61613
+WORKFLOW_LOG_ACTIVEMQ_USERNAME=
+WORKFLOW_LOG_ACTIVEMQ_PASSWORD=
+
+# 两条独立队列。
+WORKFLOW_NODE_EXECUTION_ACTIVEMQ_DESTINATION=/queue/dify.workflow.node-executions
+WORKFLOW_APP_LOG_ACTIVEMQ_DESTINATION=/queue/dify.workflow.app-logs
+
+# 当前压测较稳的 producer 配置。
+WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE=4
+WORKFLOW_LOG_PUBLISH_TIMEOUT=0.2
+WORKFLOW_LOG_PUBLISH_MAX_RETRIES=1
+WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD=1
+</code></pre>
+<p>同时需要把这些变量加入 <code>docker-compose.yaml</code> 的 <code>x-shared-api-worker-env</code>，否则只写 <code>.env</code> 不会自动进入容器：</p>
+<pre><code class="language-yaml">x-shared-api-worker-env: &amp;shared-api-worker-env
+  # ...保留原有配置...
+  WORKFLOW_LOG_ASYNC_ENABLED: ${WORKFLOW_LOG_ASYNC_ENABLED:-true}
+  WORKFLOW_LOG_QUEUE_PROVIDER: ${WORKFLOW_LOG_QUEUE_PROVIDER:-activemq}
+  WORKFLOW_LOG_ACTIVEMQ_HOST: ${WORKFLOW_LOG_ACTIVEMQ_HOST:-activemq}
+  WORKFLOW_LOG_ACTIVEMQ_PORT: ${WORKFLOW_LOG_ACTIVEMQ_PORT:-61613}
+  WORKFLOW_LOG_ACTIVEMQ_USERNAME: ${WORKFLOW_LOG_ACTIVEMQ_USERNAME:-}
+  WORKFLOW_LOG_ACTIVEMQ_PASSWORD: ${WORKFLOW_LOG_ACTIVEMQ_PASSWORD:-}
+  WORKFLOW_NODE_EXECUTION_ACTIVEMQ_DESTINATION: ${WORKFLOW_NODE_EXECUTION_ACTIVEMQ_DESTINATION:-/queue/dify.workflow.node-executions}
+  WORKFLOW_APP_LOG_ACTIVEMQ_DESTINATION: ${WORKFLOW_APP_LOG_ACTIVEMQ_DESTINATION:-/queue/dify.workflow.app-logs}
+  WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE: ${WORKFLOW_LOG_ACTIVEMQ_POOL_SIZE:-4}
+  WORKFLOW_LOG_PUBLISH_TIMEOUT: ${WORKFLOW_LOG_PUBLISH_TIMEOUT:-0.2}
+  WORKFLOW_LOG_PUBLISH_MAX_RETRIES: ${WORKFLOW_LOG_PUBLISH_MAX_RETRIES:-1}
+  WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD: ${WORKFLOW_LOG_PUBLISH_SLOW_LOG_THRESHOLD:-1}
+</code></pre>
+<h2 id="activemq-compose">ActiveMQ compose 服务</h2>
+<p>在每台 VM 的<strong>现有 Dify <code>docker-compose.yaml</code></strong> 中加入下面的 <code>activemq</code> 服务，和 <code>api</code>、<code>worker</code> 放在同一个 <code>services:</code> 下。不要单独用另一个 compose project 启动，除非额外配置共享 Docker network。</p>
+<pre><code class="language-yaml">services:
+  activemq:
+    image: apache/activemq-classic:latest
+    restart: always
+    volumes:
+      - ./volumes/activemq:/opt/apache-activemq/data
+    command: &gt;
+      /bin/sh -c '
+      if ! grep -q &quot;transport.defaultHeartBeat&quot; /opt/apache-activemq/conf/activemq.xml; then
+        sed -i &quot;s#stomp://0.0.0.0:61613?maximumConnections=1000\&amp;amp;wireFormat.maxFrameSize=104857600#stomp://0.0.0.0:61613?maximumConnections=1000\&amp;amp;wireFormat.maxFrameSize=104857600\&amp;amp;transport.defaultHeartBeat=${ACTIVEMQ_STOMP_DEFAULT_HEARTBEAT:-30000,30000}\&amp;amp;transport.hbGracePeriodMultiplier=${ACTIVEMQ_STOMP_HB_GRACE_PERIOD_MULTIPLIER:-2.0}#&quot; /opt/apache-activemq/conf/activemq.xml;
+      fi;
+      exec /opt/apache-activemq/bin/activemq console
+      '
+    ports:
+      - &quot;${EXPOSE_ACTIVEMQ_STOMP_PORT:-61613}:61613&quot;
+      - &quot;${EXPOSE_ACTIVEMQ_WEB_PORT:-8161}:8161&quot;
+    healthcheck:
+      test: [&quot;CMD-SHELL&quot;, &quot;bash -c '&lt;/dev/tcp/localhost/61613'&quot;]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+</code></pre>
+<p>ActiveMQ 管理界面默认地址和账密：</p>
+<pre><code class="language-text">http://&lt;VM_IP&gt;:8161/admin
+username: admin
+password: admin
+</code></pre>
+<p>可以在管理界面里查看 <code>dify.workflow.node-executions</code> 和 <code>dify.workflow.app-logs</code> 两条队列的 Enqueue、Dequeue、Pending/QueueSize、Consumer 数量。</p>
+<p>如果不希望暴露 ActiveMQ 管理页面，可以删除 <code>8161:8161</code> 端口映射。</p>
+<h2 id="dify-log-consumer-compose">dify-log-consumer compose 服务</h2>
+<p>在同一个 Dify <code>docker-compose.yaml</code> 中继续加入 <code>dify_log_consumer</code> 服务。它需要和 <code>activemq</code> 在同一个 compose 网络里，这样 <code>ACTIVEMQ_HOST=activemq</code> 才能解析。</p>
+<pre><code class="language-yaml">services:
+  dify_log_consumer:
+    image: dify-log-consumer:async-workflow-logs-amd64
+    restart: always
+    depends_on:
+      activemq:
+        condition: service_healthy
+    deploy:
+      replicas: 3
+    environment:
+      CONSUMER_QUEUE_PROVIDER: activemq
+
+      CONSUMER_NODE_EXECUTION_QUEUE_DESTINATION: /queue/dify.workflow.node-executions
+      CONSUMER_NODE_EXECUTION_DLQ_DESTINATION: /queue/dify.workflow.node-executions.dlq
+      CONSUMER_NODE_EXECUTION_BATCH_SIZE: 250
+      CONSUMER_NODE_EXECUTION_FLUSH_INTERVAL: 1s
+      CONSUMER_NODE_EXECUTION_MAX_IN_FLIGHT_BATCHES: 5
+
+      CONSUMER_APP_LOG_QUEUE_DESTINATION: /queue/dify.workflow.app-logs
+      CONSUMER_APP_LOG_DLQ_DESTINATION: /queue/dify.workflow.app-logs.dlq
+      CONSUMER_APP_LOG_BATCH_SIZE: 500
+      CONSUMER_APP_LOG_FLUSH_INTERVAL: 1s
+      CONSUMER_APP_LOG_MAX_IN_FLIGHT_BATCHES: 2
+
+      ACTIVEMQ_HOST: activemq
+      ACTIVEMQ_PORT: 61613
+      ACTIVEMQ_USERNAME: &quot;&quot;
+      ACTIVEMQ_PASSWORD: &quot;&quot;
+      ACTIVEMQ_TLS_ENABLED: &quot;false&quot;
+      ACTIVEMQ_CONNECT_TIMEOUT: 5s
+      ACTIVEMQ_HEARTBEAT_SEND: 30s
+      ACTIVEMQ_HEARTBEAT_RECEIVE: 0s
+      ACTIVEMQ_PREFETCH_SIZE: 500
+      ACTIVEMQ_RECONNECT_INITIAL_INTERVAL: 1s
+      ACTIVEMQ_RECONNECT_MAX_INTERVAL: 30s
+
+      DB_DIALECT: postgres
+      DATABASE_URL: postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_DATABASE}?sslmode=${DB_SSLMODE:-disable}
+      DB_MAX_OPEN_CONNS: 20
+      DB_MAX_IDLE_CONNS: 10
+      DB_CONN_MAX_LIFETIME: 30m
+      DB_SLOW_QUERY_THRESHOLD: 200ms
+
+      CONSUMER_MAX_REDELIVERIES: 10
+      CONSUMER_DLQ_INCLUDE_ORIGINAL_BODY: &quot;true&quot;
+      CONSUMER_SHUTDOWN_TIMEOUT: 30s
+      CONSUMER_MAX_MESSAGE_BYTES: 0
+      CONSUMER_MAX_DLQ_BODY_BYTES: 0
+
+      WORKFLOW_VARIABLE_TRUNCATION_MAX_SIZE: 1024000
+      WORKFLOW_VARIABLE_TRUNCATION_STRING_LENGTH: 100000
+      WORKFLOW_VARIABLE_TRUNCATION_ARRAY_LENGTH: 1000
+
+      METRICS_ENABLED: &quot;true&quot;
+      METRICS_ADDR: :9090
+      METRICS_PATH: /metrics
+      LOG_LEVEL: info
+</code></pre>
+<p>如果客户的 Compose 不支持 <code>deploy.replicas</code>（普通 <code>docker compose up</code> 通常会忽略该字段），可以用下面命令启动 3 个副本：</p>
+<pre><code class="language-bash">docker compose up -d --scale dify_log_consumer=3
+</code></pre>
+<h2 id="postgresql">外部 PostgreSQL 配置</h2>
+<p>客户使用外部 PostgreSQL，需要确认 Dify 原 <code>.env</code> 已正确配置：</p>
+<pre><code class="language-env">DB_USERNAME=&lt;postgres_user&gt;
+DB_PASSWORD=&lt;postgres_password&gt;
+DB_HOST=&lt;external_postgres_host&gt;
+DB_PORT=5432
+DB_DATABASE=dify
+DB_SSLMODE=disable   # 如果客户 PG 要求 SSL，改成 require / verify-full 等
+</code></pre>
+<p>consumer 使用 <code>DATABASE_URL</code> 连接同一个库。如果不想在 compose 里拼接，也可以在 <code>.env</code> 直接写完整 URL：</p>
+<pre><code class="language-env">DIFY_LOG_CONSUMER_DATABASE_URL=postgres://&lt;user&gt;:&lt;password&gt;@&lt;host&gt;:5432/&lt;database&gt;?sslmode=disable
+</code></pre>
+<p>然后 compose 里改成：</p>
+<pre><code class="language-yaml">DATABASE_URL: ${DIFY_LOG_CONSUMER_DATABASE_URL}
+</code></pre>
+<p>注意：外部 PostgreSQL 防火墙/安全组需要允许 3 台 VM 访问 5432。</p>
+<h2 id="compose">如果必须分开 compose 部署</h2>
+<p>不推荐分开部署；如果客户必须把 ActiveMQ / consumer 放到另一个 compose 文件或另一个目录，需要显式共享同一个 Docker network。</p>
+<p>一种做法是创建外部网络：</p>
+<pre><code class="language-bash">docker network create dify-shared || true
+</code></pre>
+<p>然后两个 compose 文件都加入：</p>
+<pre><code class="language-yaml">networks:
+  default:
+    external: true
+    name: dify-shared
+</code></pre>
+<p>并确保服务名仍为 <code>activemq</code>。如果 ActiveMQ 不在同一 Docker network，就不能使用 <code>activemq</code> 这个服务名，需要把以下变量改成可访问的 IP/域名：</p>
+<pre><code class="language-env">WORKFLOW_LOG_ACTIVEMQ_HOST=&lt;activemq_host_or_ip&gt;
+ACTIVEMQ_HOST=&lt;activemq_host_or_ip&gt;
+</code></pre>
+<h2 id="_5">启动顺序</h2>
+<p>推荐把 ActiveMQ、consumer、Dify 服务都放进<strong>同一个现有 Dify <code>docker-compose.yaml</code></strong>。客户不需要维护多个 compose 文件。</p>
+<p>每台 VM 在 Dify compose 目录下执行：</p>
+<pre><code class="language-bash"># 1. 加载离线镜像包
+docker load -i dify-api_async-workflow-logs-amd64.tar
+docker load -i dify-log-consumer_async-workflow-logs-amd64.tar
+
+# 2. 用同一个 docker-compose.yaml 一次性启动/更新相关服务
+#    --scale 用于把 dify_log_consumer 启成 3 个副本
+docker compose up -d --scale dify_log_consumer=3 activemq dify_log_consumer api worker worker_beat
+</code></pre>
+<p>这条命令里的所有服务都来自同一个 compose project，因此 <code>api</code> / <code>worker</code> / <code>dify_log_consumer</code> 都能通过同一个 Docker 网络访问 <code>activemq:61613</code>。</p>
+<p>如果三台 VM 共用同一 Redis，自动 migration 可以三台一起重启；DB migration lock 会避免重复执行。为了更稳，也可以先在第一台 VM 上执行上述命令并确认 migration 成功，再处理另外两台。</p>
+<h2 id="_6">验证命令</h2>
+<h3 id="1-dify-producer">1. 查看 Dify producer 是否预热成功</h3>
+<p>API/worker 启动后，查看 api 日志：</p>
+<pre><code class="language-bash">docker compose logs api | grep -i activemq
+</code></pre>
+<p>期望能看到类似日志，表示 ActiveMQ producer 已建立连接或完成预热：</p>
+<pre><code class="language-text">Warmed up workflow node execution ActiveMQ publisher
+</code></pre>
+<p>如果没有预热日志，但后续 workflow 调用后没有 publish error，也可以继续观察队列 Enqueue 是否增长。</p>
+<h3 id="2-consumer">2. 查看 consumer 是否正常</h3>
+<pre><code class="language-bash">docker compose ps dify_log_consumer
+docker compose logs dify_log_consumer | grep &quot;consumer worker group started&quot;
+</code></pre>
+<p>期望能看到每个 consumer 实例都启动两个 worker group：</p>
+<pre><code class="language-text">consumer worker group started name=node_execution destination=/queue/dify.workflow.node-executions batch_size=250 max_in_flight=5
+consumer worker group started name=app_log destination=/queue/dify.workflow.app-logs batch_size=500 max_in_flight=2
+</code></pre>
+<h3 id="3-activemq">3. 查看 ActiveMQ 队列积压</h3>
+<pre><code class="language-bash">curl -fsS -u admin:admin -H 'Origin: http://localhost:8161' 'http://localhost:8161/api/jolokia/read/org.apache.activemq:type=Broker,brokerName=localhost,destinationType=Queue,destinationName=dify.workflow.node-executions/QueueSize,EnqueueCount,DequeueCount,ConsumerCount'
+
+curl -fsS -u admin:admin -H 'Origin: http://localhost:8161' 'http://localhost:8161/api/jolokia/read/org.apache.activemq:type=Broker,brokerName=localhost,destinationType=Queue,destinationName=dify.workflow.app-logs/QueueSize,EnqueueCount,DequeueCount,ConsumerCount'
+</code></pre>
+<p>期望：</p>
+<pre><code class="language-text">QueueSize = 0 或能快速回落到 0
+ConsumerCount = 3
+</code></pre>
+<h3 id="4-dlq">4. 查看 DLQ</h3>
+<pre><code class="language-bash">curl -fsS -u admin:admin -H 'Origin: http://localhost:8161' 'http://localhost:8161/api/jolokia/read/org.apache.activemq:type=Broker,brokerName=localhost,destinationType=Queue,destinationName=dify.workflow.node-executions.dlq/QueueSize,EnqueueCount,DequeueCount,ConsumerCount'
+
+curl -fsS -u admin:admin -H 'Origin: http://localhost:8161' 'http://localhost:8161/api/jolokia/read/org.apache.activemq:type=Broker,brokerName=localhost,destinationType=Queue,destinationName=dify.workflow.app-logs.dlq/QueueSize,EnqueueCount,DequeueCount,ConsumerCount'
+</code></pre>
+<p>期望：DLQ 不存在或 <code>QueueSize=0</code>。</p>
+<h3 id="5-consumer-metrics">5. 查看 consumer metrics</h3>
+<pre><code class="language-bash">curl -fsS http://localhost:9090/metrics
+</code></pre>
+<p>如果 3 个 consumer 副本都映射同一个宿主机端口会冲突，生产环境可以不暴露 <code>9090</code>，改由内部监控采集。</p>
+<h2 id="_7">回滚方案</h2>
+<p>如果上线后出现异常，最小回滚步骤：</p>
+<ol>
+<li><code>.env</code> 改回：</li>
+</ol>
+<pre><code class="language-env">WORKFLOW_LOG_ASYNC_ENABLED=false
+</code></pre>
+<ol start="2">
+<li>重启 api / worker：</li>
+</ol>
+<pre><code class="language-bash">docker compose up -d api worker worker_beat
+</code></pre>
+<ol start="3">
+<li>保留 ActiveMQ 和 consumer 运行一段时间，等已有队列消费完：</li>
+</ol>
+<pre><code class="language-text">QueueSize=0
+</code></pre>
+<ol start="4">
+<li>再停止 consumer / ActiveMQ：</li>
+</ol>
+<pre><code class="language-bash">docker compose stop dify_log_consumer activemq
+</code></pre>
+<p>关闭异步后，Dify 会回到同步 DB 写 workflow logs 的旧路径。</p>
+<h2 id="_8">已知注意事项</h2>
+<ul>
+<li><code>workflow_runs</code> 初始写入仍是同步 DB 写；本 feature 不异步化它。</li>
+<li><code>workflow_node_executions</code> 和 <code>workflow_app_logs</code> 通过 ActiveMQ 异步写入。</li>
+<li>consumer 写入是幂等的；ACK 失败会导致 ActiveMQ 重投，但不会造成重复数据错误。</li>
+<li>如果外部 PostgreSQL 已经接近连接上限，需要同步评估 API 连接池、consumer 连接池和 PG <code>max_connections</code>。</li>
+<li>当前建议 producer pool 为 <code>4</code>，不要直接升太高；过高会增加 ActiveMQ 和 DB 下游压力。</li>
+</ul></main></body>
+</html>

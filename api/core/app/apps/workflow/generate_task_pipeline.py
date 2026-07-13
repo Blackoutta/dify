@@ -3,6 +3,7 @@ import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Union
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -55,12 +56,15 @@ from core.app.entities.task_entities import (
 from core.app.task_pipeline.based_generate_task_pipeline import BasedGenerateTaskPipeline
 from core.base.tts import AppGeneratorTTSPublisher, AudioTrunk
 from core.ops.ops_trace_manager import TraceQueueManager
+from core.repositories.workflow_node_execution_activemq_repository import get_workflow_app_log_activemq_publisher
 from dify_graph.entities.workflow_start_reason import WorkflowStartReason
 from dify_graph.enums import WorkflowExecutionStatus
 from dify_graph.repositories.draft_variable_repository import DraftVariableSaverFactory
 from dify_graph.runtime import GraphRuntimeState
 from dify_graph.system_variable import SystemVariable
 from extensions.ext_database import db
+from extensions.ext_workflow_log_publisher import is_enabled as is_workflow_log_async_enabled
+from libs.datetime_utils import naive_utc_now
 from models import Account
 from models.enums import CreatorUserRole
 from models.model import EndUser
@@ -709,8 +713,38 @@ class WorkflowAppGenerateTaskPipeline(GraphRuntimeStateSupport):
             created_by_role=self._created_by_role,
             created_by=self._user_id,
         )
+        workflow_app_log.id = str(uuid4())
+        workflow_app_log.created_at = naive_utc_now()
+
+        if is_workflow_log_async_enabled():
+            try:
+                get_workflow_app_log_activemq_publisher().publish(self._workflow_app_log_event(workflow_app_log))
+                return
+            except Exception:
+                logger.exception("Failed to publish workflow app log; falling back to synchronous insert")
 
         session.add(workflow_app_log)
+
+    @staticmethod
+    def _workflow_app_log_event(workflow_app_log: WorkflowAppLog) -> dict:
+        created_at = workflow_app_log.created_at.isoformat()
+        return {
+            "event_id": str(uuid4()),
+            "event_type": "workflow_app_log.insert",
+            "schema_version": 1,
+            "created_at": created_at,
+            "payload": {
+                "id": workflow_app_log.id,
+                "tenant_id": workflow_app_log.tenant_id,
+                "app_id": workflow_app_log.app_id,
+                "workflow_id": workflow_app_log.workflow_id,
+                "workflow_run_id": workflow_app_log.workflow_run_id,
+                "created_from": workflow_app_log.created_from.value,
+                "created_by_role": workflow_app_log.created_by_role.value,
+                "created_by": workflow_app_log.created_by,
+                "created_at": created_at,
+            },
+        }
 
     def _text_chunk_to_stream_response(
         self, text: str, from_variable_selector: list[str] | None = None
