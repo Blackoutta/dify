@@ -215,6 +215,89 @@ class TestWorkflowPersistenceLayer:
         assert exec_repo.saved[-1].status == WorkflowExecutionStatus.FAILED
         assert trace_tasks
 
+    def test_graph_failure_stops_other_in_flight_nodes_with_cause_outputs(self):
+        layer, _, node_repo, _ = _make_layer()
+        layer._handle_graph_run_started()
+        created_at = _naive_utc_now()
+
+        failed = WorkflowNodeExecution(
+            id="failed-exec",
+            workflow_id="workflow-id",
+            workflow_execution_id="run-id",
+            index=1,
+            node_id="failed-node",
+            node_type=BuiltinNodeTypes.HTTP_REQUEST,
+            title="KB Retrieve",
+            status=WorkflowNodeExecutionStatus.FAILED,
+            inputs={"query": "hello"},
+            outputs={"status_code": 400},
+            error="Request failed with status code 400",
+            created_at=created_at,
+        )
+        running = WorkflowNodeExecution(
+            id="running-exec",
+            workflow_id="workflow-id",
+            workflow_execution_id="run-id",
+            index=2,
+            node_id="running-node",
+            node_type=BuiltinNodeTypes.TOOL,
+            title="Search",
+            created_at=created_at,
+        )
+        retrying = WorkflowNodeExecution(
+            id="retry-exec",
+            workflow_id="workflow-id",
+            workflow_execution_id="run-id",
+            index=3,
+            node_id="retry-node",
+            node_type=BuiltinNodeTypes.HTTP_REQUEST,
+            title="Memory",
+            status=WorkflowNodeExecutionStatus.RETRY,
+            created_at=created_at,
+        )
+        succeeded = WorkflowNodeExecution(
+            id="succeeded-exec",
+            workflow_id="workflow-id",
+            workflow_execution_id="run-id",
+            index=4,
+            node_id="succeeded-node",
+            node_type=BuiltinNodeTypes.CODE,
+            title="Preprocess",
+            status=WorkflowNodeExecutionStatus.SUCCEEDED,
+            outputs={"result": "kept"},
+            created_at=created_at,
+        )
+        for execution in (failed, running, retrying, succeeded):
+            layer._node_execution_cache[execution.id] = execution
+
+        layer._handle_graph_run_failed(
+            GraphRunFailedEvent(
+                error="Request failed with status code 400",
+                exceptions_count=1,
+                failed_node_id="failed-node",
+            )
+        )
+
+        expected_outputs = {
+            "failed_node_id": "failed-node",
+            "failed_node_title": "KB Retrieve",
+            "error": "Request failed with status code 400",
+        }
+        assert failed.status == WorkflowNodeExecutionStatus.FAILED
+        assert failed.inputs == {"query": "hello"}
+        assert failed.outputs == {"status_code": 400}
+        assert failed.error == "Request failed with status code 400"
+        assert running.status == WorkflowNodeExecutionStatus.STOPPED
+        assert running.outputs == expected_outputs
+        assert running.error is None
+        assert retrying.status == WorkflowNodeExecutionStatus.STOPPED
+        assert retrying.outputs == expected_outputs
+        assert retrying.error is None
+        assert succeeded.status == WorkflowNodeExecutionStatus.SUCCEEDED
+        assert succeeded.outputs == {"result": "kept"}
+        assert running in node_repo.saved_exec_data
+        assert retrying in node_repo.saved_exec_data
+
     def test_handle_graph_run_aborted_sets_status(self):
         layer, exec_repo, _, _ = _make_layer()
         layer._handle_graph_run_started()

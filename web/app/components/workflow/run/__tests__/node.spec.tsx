@@ -12,7 +12,7 @@ vi.mock('@/hooks/use-theme', () => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: (key: string, options?: Record<string, unknown>) => [key, options?.node, options?.error].filter(Boolean).join(' '),
   }),
 }))
 
@@ -63,7 +63,7 @@ const createNodeInfo = (overrides: Partial<NodeTracing> = {}): NodeTracing => ({
   ...overrides,
 })
 
-describe('NodePanel retry succeeded state', () => {
+describe('NodePanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUseTheme.mockReturnValue({ theme: Theme.light } as ReturnType<typeof useTheme>)
@@ -91,5 +91,24 @@ describe('NodePanel retry succeeded state', () => {
     expect(screen.getByText('nodes.common.retry.retrySuccessful')).toBeInTheDocument()
     expect(screen.getByText('nodes.common.retry.retryDetectedInProcessData')).toBeInTheDocument()
     expect(screen.getAllByTestId('code-editor').some(editor => editor.textContent?.includes('retry_errors'))).toBe(true)
+  })
+
+  it('should show the upstream failure when a node is stopped by fail-fast', () => {
+    render(
+      <NodePanel
+        nodeInfo={createNodeInfo({
+          status: NodeRunningStatus.Stopped,
+          outputs: {
+            failed_node_id: 'failed-node-1',
+            failed_node_title: 'HTTP Request (2)',
+            error: 'Request failed with status code 500',
+          },
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('HTTP Request'))
+
+    expect(screen.getByText(/tracing\.stopByNode HTTP Request \(2\) Request failed with status code 500/)).toBeInTheDocument()
   })
 })

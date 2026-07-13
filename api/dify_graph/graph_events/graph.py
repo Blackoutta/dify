@@ -25,6 +25,7 @@ class GraphRunSucceededEvent(BaseGraphEvent):
 class GraphRunFailedEvent(BaseGraphEvent):
     error: str = Field(..., description="failed reason")
     exceptions_count: int = Field(description="exception count", default=0)
+    failed_node_id: str | None = Field(default=None, description="node that caused the graph failure")
 
 
 class GraphRunPartialSucceededEvent(BaseGraphEvent):

@@ -314,6 +314,7 @@ class GraphEngine:
             failed_event = GraphRunFailedEvent(
                 error=str(e),
                 exceptions_count=self._graph_execution.exceptions_count,
+                failed_node_id=self._graph_execution.failed_node_id,
             )
             self._event_manager.notify_layers(failed_event)
             yield failed_event

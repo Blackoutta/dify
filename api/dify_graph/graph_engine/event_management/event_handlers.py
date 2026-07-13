@@ -244,7 +244,7 @@ class EventHandler:
             self.dispatch(result)
         else:
             # Abort execution
-            self._graph_execution.fail(RuntimeError(event.error))
+            self._graph_execution.fail(RuntimeError(event.error), failed_node_id=event.node_id)
             self._event_collector.collect(event)
             self._state_manager.finish_execution(event.node_id)
 

@@ -213,7 +213,13 @@ const NodePanel: FC<Props> = ({
             <div className={cn('mb-1', hideInfo && '!px-2 !py-0.5')}>
               {(nodeInfo.status === 'stopped') && (
                 <StatusContainer status="stopped">
-                  {t('tracing.stopBy', { ns: 'workflow', user: nodeInfo.created_by ? nodeInfo.created_by.name : 'N/A' })}
+                  {nodeInfo.outputs?.failed_node_title
+                    ? t('tracing.stopByNode', {
+                        ns: 'workflow',
+                        node: nodeInfo.outputs.failed_node_title,
+                        error: nodeInfo.outputs.error,
+                      })
+                    : t('tracing.stopBy', { ns: 'workflow', user: nodeInfo.created_by ? nodeInfo.created_by.name : 'N/A' })}
                 </StatusContainer>
               )}
               {(nodeInfo.status === 'exception') && (

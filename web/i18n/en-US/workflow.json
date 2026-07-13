@@ -1141,6 +1141,7 @@
   "tabs.utilities": "Utilities",
   "tabs.workflowTool": "Workflow",
   "tracing.stopBy": "Stop by {{user}}",
+  "tracing.stopByNode": "Stopped because {{node}} failed: {{error}}",
   "triggerStatus.disabled": "TRIGGER • DISABLED",
   "triggerStatus.enabled": "TRIGGER",
   "variableReference.assignedVarsDescription": "Assigned variables must be writable variables, such as ",

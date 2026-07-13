@@ -12,7 +12,7 @@ state.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Union
+from typing import Any, TypedDict, Union
 
 from core.app.entities.app_invoke_entities import AdvancedChatAppGenerateEntity, WorkflowAppGenerateEntity
 from core.ops.entities.trace_entity import TraceTaskName
@@ -48,6 +48,12 @@ from dify_graph.repositories.workflow_node_execution_repository import WorkflowN
 from libs.datetime_utils import naive_utc_now
 
 RETRY_ERRORS_PROCESS_DATA_KEY = "retry_errors"
+
+
+class _StoppedNodeOutputs(TypedDict):
+    failed_node_id: str
+    failed_node_title: str
+    error: str
 
 
 @dataclass(slots=True)
@@ -200,7 +206,22 @@ class WorkflowPersistenceLayer(GraphEngineLayer):
         execution.exceptions_count = event.exceptions_count
         self._populate_completion_statistics(execution)
 
-        self._fail_running_node_executions(error_message=event.error)
+        if event.failed_node_id:
+            failed_node_title = next(
+                (
+                    node_execution.title
+                    for node_execution in self._node_execution_cache.values()
+                    if node_execution.node_id == event.failed_node_id
+                ),
+                event.failed_node_id,
+            )
+            self._stop_in_flight_node_executions(
+                failed_node_id=event.failed_node_id,
+                failed_node_title=failed_node_title,
+                error=event.error,
+            )
+        else:
+            self._fail_running_node_executions(error_message=event.error)
         self._workflow_execution_repository.save(execution)
         self._enqueue_trace_task(execution)
 
@@ -423,6 +444,32 @@ class WorkflowPersistenceLayer(GraphEngineLayer):
                 execution.finished_at = now
                 execution.elapsed_time = max((now - execution.created_at).total_seconds(), 0.0)
                 self._workflow_node_execution_repository.save(execution)
+
+    def _stop_in_flight_node_executions(
+        self,
+        *,
+        failed_node_id: str,
+        failed_node_title: str,
+        error: str,
+    ) -> None:
+        now = naive_utc_now()
+        outputs: _StoppedNodeOutputs = {
+            "failed_node_id": failed_node_id,
+            "failed_node_title": failed_node_title,
+            "error": error,
+        }
+        for execution in self._node_execution_cache.values():
+            if execution.status not in {
+                WorkflowNodeExecutionStatus.RUNNING,
+                WorkflowNodeExecutionStatus.RETRY,
+            }:
+                continue
+            execution.status = WorkflowNodeExecutionStatus.STOPPED
+            execution.outputs = outputs
+            execution.finished_at = now
+            execution.elapsed_time = max((now - execution.created_at).total_seconds(), 0.0)
+            self._workflow_node_execution_repository.save(execution)
+            self._workflow_node_execution_repository.save_execution_data(execution)
 
     def _enqueue_trace_task(self, execution: WorkflowExecution) -> None:
         if not self._trace_manager:

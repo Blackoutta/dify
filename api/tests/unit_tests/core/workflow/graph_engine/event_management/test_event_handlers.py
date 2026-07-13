@@ -11,7 +11,7 @@ from dify_graph.graph_engine.event_management.event_manager import EventManager
 from dify_graph.graph_engine.graph_state_manager import GraphStateManager
 from dify_graph.graph_engine.ready_queue.in_memory import InMemoryReadyQueue
 from dify_graph.graph_engine.response_coordinator.coordinator import ResponseStreamCoordinator
-from dify_graph.graph_events import NodeRunRetryEvent, NodeRunStartedEvent
+from dify_graph.graph_events import NodeRunFailedEvent, NodeRunRetryEvent, NodeRunStartedEvent
 from dify_graph.node_events import NodeRunResult
 from dify_graph.runtime import GraphRuntimeState, VariablePool
 from libs.datetime_utils import naive_utc_now
@@ -23,6 +23,9 @@ class _StubEdgeProcessor:
 
 class _StubErrorHandler:
     """Minimal error handler stub for tests."""
+
+    def handle_node_failure(self, _event: NodeRunFailedEvent) -> None:
+        return None
 
 
 class _StubNode:
@@ -117,3 +120,28 @@ def test_retry_does_not_emit_additional_start_event() -> None:
 
     node_execution = graph_execution.get_or_create_node_execution(node_id)
     assert node_execution.retry_count == 1
+
+
+def test_failed_node_is_recorded_as_graph_failure_source() -> None:
+    node_id = "test-node"
+    handler, _, graph_execution = _build_event_handler(node_id)
+    graph_execution.start()
+
+    handler.dispatch(
+        NodeRunFailedEvent(
+            id="exec-1",
+            node_id=node_id,
+            node_type=BuiltinNodeTypes.CODE,
+            node_title="Stub Node",
+            start_at=naive_utc_now(),
+            finished_at=naive_utc_now(),
+            error="boom",
+            node_run_result=NodeRunResult(
+                status=WorkflowNodeExecutionStatus.FAILED,
+                error="boom",
+            ),
+        )
+    )
+
+    assert graph_execution.failed_node_id == node_id
+    assert graph_execution.error_message == "boom"

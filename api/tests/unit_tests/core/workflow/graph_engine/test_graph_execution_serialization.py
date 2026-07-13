@@ -30,7 +30,7 @@ def test_graph_execution_serialization_round_trip() -> None:
     node_a.mark_failed("boom")
     node_b = execution.get_or_create_node_execution("node-b")
     node_b.mark_skipped()
-    execution.fail(CustomGraphExecutionError("serialization failure"))
+    execution.fail(CustomGraphExecutionError("serialization failure"), failed_node_id="node-a")
 
     # Act
     serialized = execution.dumps()
@@ -41,12 +41,14 @@ def test_graph_execution_serialization_round_trip() -> None:
     # Assert
     assert payload["type"] == "GraphExecution"
     assert payload["version"] == "1.0"
+    assert payload["failed_node_id"] == "node-a"
     assert restored.workflow_id == "wf-1"
     assert restored.started is True
     assert restored.completed is True
     assert restored.aborted is False
     assert isinstance(restored.error, CustomGraphExecutionError)
     assert str(restored.error) == "serialization failure"
+    assert restored.failed_node_id == "node-a"
     assert set(restored.node_executions) == {"node-a", "node-b"}
     restored_node_a = restored.node_executions["node-a"]
     assert restored_node_a.state is NodeState.TAKEN
