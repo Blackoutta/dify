@@ -11,6 +11,7 @@ from typing import ClassVar
 
 class RetryTestHandler(BaseHTTPRequestHandler):
     counter: ClassVar[int] = 0
+    retry_counter: ClassVar[int] = 0
     fail_rate: ClassVar[float] = 0.5
     lock: ClassVar[threading.Lock] = threading.Lock()
 
@@ -30,17 +31,31 @@ class RetryTestHandler(BaseHTTPRequestHandler):
         self._reply()
 
     def _reply(self) -> None:
+        path = self.path.split("?", 1)[0]
         with self.lock:
             type(self).counter += 1
             count = type(self).counter
+            if path == "/test-retry":
+                type(self).retry_counter += 1
+                retry_should_fail = type(self).retry_counter % 3 != 0
+            else:
+                retry_should_fail = False
 
-        fixed_error = self.path.split("?", 1)[0] == "/error"
-        should_fail = fixed_error or random.random() < type(self).fail_rate
+        fixed_error = path == "/error"
+        should_fail = fixed_error or retry_should_fail or (path != "/test-retry" and random.random() < type(self).fail_rate)
         status = 500 if should_fail else 200
         body = {
             "count": count,
             "status": status,
-            "message": "fixed 500 error" if fixed_error else "random 500 error" if should_fail else "ok",
+            "message": (
+                "fixed 500 error"
+                if fixed_error
+                else "retry error"
+                if retry_should_fail
+                else "random 500 error"
+                if should_fail
+                else "ok"
+            ),
         }
         payload = json.dumps(body).encode()
 
