@@ -4,7 +4,7 @@ import collections
 from typing import TypedDict, override
 
 from core.ops.base_trace_instance import BaseTraceInstance
-from core.ops.entities.config_entity import BaseTracingConfig
+from core.ops.entities.config_entity import BaseTracingConfig, TracingProviderEnum
 
 
 class UnifiedProviderConfigEntry(TypedDict):
@@ -17,7 +17,14 @@ class UnifiedTraceProviderConfigMap(collections.UserDict[str, UnifiedProviderCon
 
     @override
     def __getitem__(self, key: str) -> UnifiedProviderConfigEntry:
-        raise KeyError(f"Unified tracing provider is not registered: {key}")
+        match key:
+            case TracingProviderEnum.PHOENIX:
+                from dify_trace_arize_phoenix.config import PhoenixConfig
+                from dify_trace_arize_phoenix.unified_trace import UnifiedPhoenixTrace
+
+                return {"config_class": PhoenixConfig, "trace_instance": UnifiedPhoenixTrace}
+            case _:
+                raise KeyError(f"Unified tracing provider is not registered: {key}")
 
 
 unified_provider_config_map = UnifiedTraceProviderConfigMap()

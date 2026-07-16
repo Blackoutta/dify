@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 
 from core.ops.entities.trace_entity import MessageTraceInfo, WorkflowTraceInfo
 from core.ops.unified_trace.entities import CanonicalSpanKind, CanonicalSpanStatus
-from core.ops.unified_trace.trace_builder import CanonicalTraceBuilder, resolve_session_id
+from core.ops.unified_trace.trace_builder import (
+    CanonicalTraceBuilder,
+    RepositoryWorkflowExecutionLoader,
+    resolve_session_id,
+)
 
 
 def make_workflow_trace_info(**overrides) -> WorkflowTraceInfo:
@@ -187,6 +191,29 @@ def test_nested_workflow_exposes_typed_external_parent():
     assert trace is not None
     assert trace.external_parent is not None
     assert trace.external_parent.parent_node_execution_id == "outer-tool"
+
+
+def test_repository_loader_scopes_repository_to_trace(monkeypatch):
+    repository = MagicMock()
+    repository.get_by_workflow_execution.return_value = [node_execution()]
+    factory = MagicMock()
+    factory.create_workflow_node_execution_repository.return_value = repository
+    monkeypatch.setattr("core.ops.unified_trace.trace_builder.DifyCoreRepositoryFactory", factory)
+    monkeypatch.setattr("core.ops.unified_trace.trace_builder.db", MagicMock(engine="engine"))
+    account = MagicMock()
+    get_account = MagicMock(return_value=account)
+    loader = RepositoryWorkflowExecutionLoader(get_account)
+    info = workflow_info()
+
+    result = loader(info)
+
+    assert len(result) == 1
+    get_account.assert_called_once_with("app-1")
+    factory.create_workflow_node_execution_repository.assert_called_once()
+    call = factory.create_workflow_node_execution_repository.call_args.kwargs
+    assert call["tenant_id"] == "tenant-1"
+    assert call["app_id"] == "app-1"
+    repository.get_by_workflow_execution.assert_called_once_with(workflow_execution_id="run-1")
 
 
 def test_message_trace_does_not_load_workflow_executions():

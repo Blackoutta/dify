@@ -14,6 +14,8 @@ from core.ops.unified_trace.parent_context import (
     ParentDestination,
     ParentResolutionKind,
     ProviderParentContext,
+    destination_scope,
+    parent_destination_from_config,
 )
 
 
@@ -35,6 +37,21 @@ def context(**overrides) -> ProviderParentContext:
 
 def coordinator(redis: MagicMock, destination: ParentDestination | None) -> ParentContextCoordinator:
     return ParentContextCoordinator(redis, lambda workflow_run_id: destination)
+
+
+def test_parent_destination_uses_non_secret_provider_scope():
+    destination = parent_destination_from_config(
+        "langsmith",
+        {"api_key": "secret", "endpoint": "https://smith.example", "project": "project-a"},
+        unified=True,
+    )
+
+    assert destination == ParentDestination(
+        provider="langsmith",
+        scope=destination_scope("langsmith", "https://smith.example", "project-a"),
+        unified=True,
+    )
+    assert "secret" not in destination.scope
 
 
 def test_publish_uses_unified_namespace_and_ttl():

@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
+from sqlalchemy.orm import sessionmaker
 
 from core.helper.trace_id_helper import ParentTraceContext
 from core.ops.entities.trace_entity import (
@@ -29,8 +30,34 @@ from core.ops.unified_trace.hierarchy import (
     execution_id,
     execution_metadata,
 )
+from core.repositories import DifyCoreRepositoryFactory
+from extensions.ext_database import db
+from models import Account
+from models.workflow import WorkflowNodeExecutionTriggeredFrom
 
 WorkflowExecutionLoader = Callable[[WorkflowTraceInfo], Sequence[WorkflowExecutionLike]]
+ServiceAccountResolver = Callable[[str], Account]
+
+
+class RepositoryWorkflowExecutionLoader:
+    """Load one workflow's executions through the tenant-scoped core repository."""
+
+    def __init__(self, get_service_account: ServiceAccountResolver) -> None:
+        self._get_service_account = get_service_account
+
+    def __call__(self, trace_info: WorkflowTraceInfo) -> Sequence[WorkflowExecutionLike]:
+        app_id = trace_info.metadata.get("app_id")
+        if not isinstance(app_id, str) or not app_id:
+            raise ValueError("No app_id found in workflow trace metadata")
+        repository = DifyCoreRepositoryFactory.create_workflow_node_execution_repository(
+            session_factory=sessionmaker(bind=db.engine),
+            tenant_id=trace_info.tenant_id,
+            user=self._get_service_account(app_id),
+            app_id=app_id,
+            triggered_from=WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
+        )
+        return repository.get_by_workflow_execution(workflow_execution_id=trace_info.workflow_run_id)
+
 
 _NODE_KIND: dict[str, CanonicalSpanKind] = {
     "llm": CanonicalSpanKind.LLM,

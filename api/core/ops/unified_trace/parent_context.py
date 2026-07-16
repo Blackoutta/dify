@@ -5,19 +5,26 @@ signals. Provider adapters only create and consume their opaque context fields.
 """
 
 import hashlib
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from configs import dify_config
 from core.helper.trace_id_helper import ParentTraceContext
 from core.ops.exceptions import (
     InvalidTraceParentContextError,
     PendingTraceParentContextError,
     TraceParentContextAccessError,
 )
+from extensions.ext_database import db
+from models.model import App, TraceAppConfig
+from models.workflow import WorkflowRun
 
 _PARENT_CONTEXT_TTL_SECONDS = 300
 _PARENT_CONTEXT_KEY_PREFIX = "trace:unified:parent:"
@@ -78,6 +85,64 @@ def destination_scope(provider: str, endpoint: str, project: str) -> str:
     """Return a stable non-secret fingerprint for a provider destination."""
     value = f"{provider}\0{endpoint.rstrip('/')}\0{project}"
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def parent_destination_from_config(
+    provider: str,
+    tracing_config: Mapping[str, object],
+    *,
+    unified: bool,
+) -> ParentDestination:
+    """Build destination compatibility from non-secret persisted fields."""
+    endpoint = tracing_config.get("endpoint")
+    project = tracing_config.get("project")
+    return ParentDestination(
+        provider=provider,
+        scope=destination_scope(
+            provider,
+            endpoint if isinstance(endpoint, str) else "",
+            project if isinstance(project, str) else "",
+        ),
+        unified=unified,
+    )
+
+
+def resolve_parent_destination(parent_workflow_run_id: str) -> ParentDestination | None:
+    """Resolve whether a parent workflow can publish compatible unified context."""
+    with Session(db.engine) as session:
+        workflow_run = session.get(WorkflowRun, parent_workflow_run_id)
+        if workflow_run is None:
+            return None
+        app = session.get(App, workflow_run.app_id)
+        if app is None or not app.tracing:
+            return None
+        try:
+            app_tracing = json.loads(app.tracing)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(app_tracing, Mapping) or not app_tracing.get("enabled"):
+            return None
+        provider = app_tracing.get("tracing_provider")
+        if not isinstance(provider, str):
+            return None
+        trace_config = session.scalar(
+            select(TraceAppConfig)
+            .where(TraceAppConfig.app_id == app.id, TraceAppConfig.tracing_provider == provider)
+            .limit(1)
+        )
+        if trace_config is None or not isinstance(trace_config.tracing_config, Mapping):
+            return None
+
+        unified = False
+        if dify_config.OPS_TRACE_UNIFIED_ENABLED:
+            from core.ops.unified_trace.registry import unified_provider_config_map
+
+            try:
+                unified_provider_config_map[provider]
+                unified = True
+            except KeyError:
+                pass
+        return parent_destination_from_config(provider, trace_config.tracing_config, unified=unified)
 
 
 class ParentContextCoordinator:
