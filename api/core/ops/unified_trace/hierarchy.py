@@ -4,19 +4,18 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
+
+from graphon.entities import WorkflowNodeExecution
 
 _WRAPPER_INDEX_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_WRAPPER_FIELDS: tuple[tuple[Literal["iteration", "loop"], str, str], ...] = (
+    ("iteration", "iteration_id", "iteration_index"),
+    ("loop", "loop_id", "loop_index"),
+)
 
 
-class WorkflowExecutionLike(Protocol):
-    id: str
-    node_execution_id: str | None
-    node_id: str
-    predecessor_node_id: str | None
-    created_at: datetime | None
-    elapsed_time: float | None
-    status: Any
+WorkflowExecutionLike = WorkflowNodeExecution
 
 
 @dataclass(frozen=True)
@@ -138,8 +137,8 @@ def build_workflow_hierarchy(executions: Sequence[WorkflowExecutionLike]) -> Wor
         )
         if parent_execution_id is None:
             metadata = execution_metadata(item)
-            for key in ("iteration_id", "loop_id"):
-                container_node_id = _metadata_or_attr(item, metadata, key)
+            for structured_key in ("iteration_id", "loop_id"):
+                container_node_id = _metadata_or_attr(item, metadata, structured_key)
                 if isinstance(container_node_id, str):
                     parent_execution_id = execution_by_node_id.get(container_node_id)
                 if parent_execution_id is not None:
@@ -152,10 +151,7 @@ def build_workflow_hierarchy(executions: Sequence[WorkflowExecutionLike]) -> Wor
     grouped: dict[WrapperKey, list[WorkflowExecutionLike]] = {}
     for item in executions:
         metadata = execution_metadata(item)
-        for kind, container_key, index_key in (
-            ("iteration", "iteration_id", "iteration_index"),
-            ("loop", "loop_id", "loop_index"),
-        ):
+        for kind, container_key, index_key in _WRAPPER_FIELDS:
             container_node_id = _metadata_or_attr(item, metadata, container_key)
             index = _normalize_index(_metadata_or_attr(item, metadata, index_key))
             if not isinstance(container_node_id, str) or index is None:
@@ -163,19 +159,19 @@ def build_workflow_hierarchy(executions: Sequence[WorkflowExecutionLike]) -> Wor
             container_execution_id = execution_by_node_id.get(container_node_id)
             if container_execution_id is None or container_execution_id == execution_id(item):
                 continue
-            key = WrapperKey(kind=kind, container_execution_id=container_execution_id, index=index)
-            grouped.setdefault(key, []).append(item)
+            wrapper_key = WrapperKey(kind=kind, container_execution_id=container_execution_id, index=index)
+            grouped.setdefault(wrapper_key, []).append(item)
             break
 
     wrappers: list[WrapperSpec] = []
     wrapper_by_child_execution_id: dict[str, WrapperSpec] = {}
-    for key in sorted(grouped, key=lambda item: (item.kind, item.container_execution_id, item.index)):
-        children = grouped[key]
+    for wrapper_key in sorted(grouped, key=lambda item: (item.kind, item.container_execution_id, item.index)):
+        children = grouped[wrapper_key]
         child_ids = frozenset(execution_id(item) for item in children)
         wrapper = WrapperSpec(
-            id=f"{key.kind}:{key.container_execution_id}:{key.index}",
-            key=key,
-            parent_execution_id=key.container_execution_id,
+            id=f"{wrapper_key.kind}:{wrapper_key.container_execution_id}:{wrapper_key.index}",
+            key=wrapper_key,
+            parent_execution_id=wrapper_key.container_execution_id,
             child_execution_ids=child_ids,
             start_time=min(item.created_at or datetime.now() for item in children),
             end_time=max(_finished_at(item) for item in children),

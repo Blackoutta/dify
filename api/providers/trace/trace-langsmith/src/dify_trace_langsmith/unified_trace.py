@@ -1,7 +1,7 @@
 """LangSmith adapter for the provider-neutral unified tracing runtime."""
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langsmith import Client
@@ -21,7 +21,9 @@ from core.ops.utils import generate_dotted_order
 from dify_trace_langsmith.config import LangSmithConfig
 from extensions.ext_redis import redis_client
 
-_RUN_TYPE: dict[CanonicalSpanKind, str] = {
+type LangSmithRunType = Literal["chain", "llm", "retriever", "tool"]
+
+_RUN_TYPE: dict[CanonicalSpanKind, LangSmithRunType] = {
     CanonicalSpanKind.CHAIN: "chain",
     CanonicalSpanKind.LLM: "llm",
     CanonicalSpanKind.RETRIEVER: "retriever",
@@ -38,9 +40,9 @@ def _provider_run_id(canonical_id: str) -> str:
         return str(uuid5(NAMESPACE_URL, f"dify-unified-trace:{canonical_id}"))
 
 
-def _langsmith_value(value: Any, key: str) -> Mapping[str, Any]:
+def _langsmith_value(value: Any, key: str) -> dict[str, Any]:
     if isinstance(value, Mapping):
-        return value
+        return dict(value)
     return {key: value}
 
 
@@ -67,6 +69,8 @@ class UnifiedLangSmithAdapter:
         provider_id_by_canonical_id = {span.id: _provider_run_id(span.id) for span in trace.spans}
         root_provider_id = provider_id_by_canonical_id[trace.root_span_id]
         restored_context = parent.context if parent and parent.kind is ParentResolutionKind.RESTORED else None
+        external_parent_id: str | None
+        external_parent_order: str | None
 
         if restored_context is not None:
             trace_id = restored_context.trace_id

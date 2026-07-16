@@ -13,6 +13,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.trace import Span, Status, StatusCode, set_span_in_context
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.util.types import AttributeValue
 
 from core.ops.unified_trace.entities import CanonicalSpan, CanonicalSpanKind, CanonicalSpanStatus, CanonicalTrace
 from core.ops.unified_trace.parent_context import (
@@ -100,7 +101,7 @@ class UnifiedPhoenixAdapter:
         canonical_span: CanonicalSpan,
         trace: CanonicalTrace,
         parent: ParentResolution | None,
-    ) -> dict[str, object]:
+    ) -> dict[str, AttributeValue]:
         metadata = dict(canonical_span.metadata)
         if (
             canonical_span.id == trace.root_span_id
