@@ -241,5 +241,9 @@ def test_message_trace_does_not_load_workflow_executions():
 
     assert trace is not None
     assert trace.root_span_id == "message-1"
+    assert [span.name for span in trace.spans] == ["message", "llm"]
     assert trace.spans[0].outputs == "hello"
+    assert trace.spans[1].parent_id == "message-1"
+    assert trace.spans[1].kind is CanonicalSpanKind.LLM
+    assert trace.spans[1].metadata["total_tokens"] == 5
     loader.assert_not_called()

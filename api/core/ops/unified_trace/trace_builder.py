@@ -311,17 +311,53 @@ class CanonicalTraceBuilder:
         message = trace_info.message_data
         if message is None:
             return None
-        return self._single_trace(
-            trace_info,
-            name="message",
-            kind=CanonicalSpanKind.CHAIN,
-            inputs=trace_info.inputs,
-            outputs=getattr(message, "answer", trace_info.outputs),
-            error=trace_info.error,
-            start_time=trace_info.start_time or getattr(message, "created_at", None),
-            end_time=trace_info.end_time or getattr(message, "updated_at", None),
-            span_id=trace_info.message_id or str(getattr(message, "id", "")) or None,
+        message_id = trace_info.message_id or str(getattr(message, "id", "")) or str(uuid4())
+        started_at = _started_at(trace_info.start_time or getattr(message, "created_at", None))
+        ended_at = trace_info.end_time or getattr(message, "updated_at", None)
+        answer = getattr(message, "answer", trace_info.outputs)
+        message_error = trace_info.error or getattr(message, "error", None)
+        metadata = {
+            **trace_info.metadata,
+            "model_provider": getattr(message, "model_provider", None),
+            "model_name": getattr(message, "model_id", None),
+            "prompt_tokens": trace_info.message_tokens,
+            "completion_tokens": trace_info.answer_tokens,
+            "total_tokens": trace_info.total_tokens,
+        }
+        spans = (
+            CanonicalSpan(
+                id=message_id,
+                parent_id=None,
+                name="message",
+                kind=CanonicalSpanKind.CHAIN,
+                start_time=started_at,
+                end_time=ended_at,
+                inputs=trace_info.inputs,
+                outputs=answer,
+                status=_status(message_error),
+                error=message_error,
+                metadata=metadata,
+            ),
+            CanonicalSpan(
+                id=f"{message_id}:llm",
+                parent_id=message_id,
+                name="llm",
+                kind=CanonicalSpanKind.LLM,
+                start_time=started_at,
+                end_time=ended_at,
+                inputs=trace_info.inputs,
+                outputs=trace_info.outputs if trace_info.outputs is not None else answer,
+                status=_status(message_error),
+                error=message_error,
+                metadata=metadata,
+                synthetic=True,
+            ),
+        )
+        return CanonicalTrace(
+            trace_id=trace_info.resolved_trace_id or message_id,
             session_id=resolve_session_id(trace_info),
+            root_span_id=message_id,
+            spans=spans,
         )
 
     def _build_moderation(self, trace_info: ModerationTraceInfo) -> CanonicalTrace | None:

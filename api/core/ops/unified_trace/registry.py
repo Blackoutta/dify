@@ -23,6 +23,11 @@ class UnifiedTraceProviderConfigMap(collections.UserDict[str, UnifiedProviderCon
                 from dify_trace_arize_phoenix.unified_trace import UnifiedPhoenixTrace
 
                 return {"config_class": PhoenixConfig, "trace_instance": UnifiedPhoenixTrace}
+            case TracingProviderEnum.LANGSMITH:
+                from dify_trace_langsmith.config import LangSmithConfig
+                from dify_trace_langsmith.unified_trace import UnifiedLangSmithTrace
+
+                return {"config_class": LangSmithConfig, "trace_instance": UnifiedLangSmithTrace}
             case _:
                 raise KeyError(f"Unified tracing provider is not registered: {key}")
 
