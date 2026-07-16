@@ -45,6 +45,11 @@ class DummyUnifiedTraceInstance(DummyTraceInstance):
     pass
 
 
+class FailingUnifiedTraceInstance(DummyTraceInstance):
+    def __init__(self, config):
+        raise RuntimeError("unified constructor failed")
+
+
 FAKE_PROVIDER_ENTRY = {
     "config_class": DummyConfig,
     "secret_keys": ["secret_value"],
@@ -406,6 +411,30 @@ def test_get_ops_trace_instance_routes_by_unified_switch(
     instance = OpsTraceManager.get_ops_trace_instance("app-id")
 
     assert type(instance) is expected_type
+
+
+def test_registered_unified_provider_does_not_fallback_when_construction_fails(
+    monkeypatch: pytest.MonkeyPatch, mock_db
+):
+    _configure_trace_instance_test(monkeypatch, mock_db)
+    monkeypatch.setattr(dify_config, "OPS_TRACE_UNIFIED_ENABLED", True)
+    monkeypatch.setattr(
+        "core.ops.ops_trace_manager.unified_provider_config_map",
+        FakeProviderMap(
+            {
+                "dummy": {
+                    "config_class": DummyConfig,
+                    "trace_instance": FailingUnifiedTraceInstance,
+                }
+            }
+        ),
+    )
+    legacy_instance_count = len(DummyTraceInstance.instances)
+
+    with pytest.raises(RuntimeError, match="unified constructor failed"):
+        OpsTraceManager.get_ops_trace_instance("app-id")
+
+    assert len(DummyTraceInstance.instances) == legacy_instance_count
 
 
 def test_unified_and_legacy_instances_have_separate_cache_entries(monkeypatch: pytest.MonkeyPatch, mock_db):
