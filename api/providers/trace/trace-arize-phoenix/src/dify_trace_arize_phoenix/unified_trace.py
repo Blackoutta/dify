@@ -11,10 +11,11 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk import trace as trace_sdk
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.trace import Span, Status, StatusCode, set_span_in_context
+from opentelemetry.trace import Span, Status, StatusCode, get_current_span, set_span_in_context
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry.util.types import AttributeValue
 
+from core.ops.exceptions import InvalidTraceParentContextError
 from core.ops.unified_trace.entities import CanonicalSpan, CanonicalSpanKind, CanonicalSpanStatus, CanonicalTrace
 from core.ops.unified_trace.parent_context import (
     ParentContextCoordinator,
@@ -93,8 +94,12 @@ class UnifiedPhoenixAdapter:
             return None
         traceparent = parent.context.provider_context.get("traceparent")
         if not traceparent:
-            return None
-        return self._propagator.extract(carrier={"traceparent": traceparent})
+            raise InvalidTraceParentContextError("Phoenix parent context is missing traceparent")
+        context = self._propagator.extract(carrier={"traceparent": traceparent})
+        span_context = get_current_span(context).get_span_context()
+        if not span_context.is_valid or not span_context.is_remote:
+            raise InvalidTraceParentContextError("Phoenix parent context contains an invalid traceparent")
+        return context
 
     def _attributes(
         self,
@@ -142,19 +147,17 @@ class UnifiedPhoenixAdapter:
                 start_time=_nanos(canonical_span.start_time),
             )
             span_by_id[canonical_span.id] = span
+            provider_parent_context: ProviderParentContext | None = None
             try:
                 if canonical_span.can_parent_workflow:
                     carrier: dict[str, str] = {}
                     self._propagator.inject(carrier, context=set_span_in_context(span))
-                    publish_parent_context(
-                        canonical_span.id,
-                        ProviderParentContext(
-                            provider=self.provider_name,
-                            scope=self.scope,
-                            trace_id=trace.trace_id,
-                            parent_id=canonical_span.id,
-                            provider_context=carrier,
-                        ),
+                    provider_parent_context = ProviderParentContext(
+                        provider=self.provider_name,
+                        scope=self.scope,
+                        trace_id=trace.trace_id,
+                        parent_id=canonical_span.id,
+                        provider_context=carrier,
                     )
                 if canonical_span.status is CanonicalSpanStatus.ERROR:
                     error = canonical_span.error or "trace operation failed"
@@ -164,6 +167,8 @@ class UnifiedPhoenixAdapter:
                     span.set_status(Status(StatusCode.OK))
             finally:
                 span.end(end_time=_nanos(canonical_span.end_time))
+            if provider_parent_context is not None:
+                publish_parent_context(canonical_span.id, provider_parent_context)
 
 
 class UnifiedPhoenixTrace(UnifiedTraceInstance):

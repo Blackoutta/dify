@@ -6,6 +6,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langsmith import Client
 
+from core.ops.exceptions import InvalidTraceParentContextError
 from core.ops.unified_trace.entities import CanonicalSpanKind, CanonicalSpanStatus, CanonicalTrace
 from core.ops.unified_trace.parent_context import (
     ParentContextCoordinator,
@@ -52,7 +53,9 @@ class UnifiedLangSmithAdapter:
     provider_name = "langsmith"
 
     def __init__(self, config: LangSmithConfig) -> None:
-        self._client = Client(api_key=config.api_key, api_url=config.endpoint)
+        # Parent context is published only after create_run returns, so unified
+        # ordering requires synchronous writes rather than the SDK's default queue.
+        self._client = Client(api_key=config.api_key, api_url=config.endpoint, auto_batch_tracing=False)
         self._project_name = config.project
         self._scope = destination_scope(self.provider_name, config.endpoint, config.project)
 
@@ -76,6 +79,8 @@ class UnifiedLangSmithAdapter:
             trace_id = restored_context.trace_id
             external_parent_id = restored_context.parent_id
             external_parent_order = restored_context.provider_context.get("dotted_order")
+            if not external_parent_order:
+                raise InvalidTraceParentContextError("LangSmith parent context is missing dotted_order")
         else:
             root_span = next(span for span in trace.spans if span.id == trace.root_span_id)
             external_parent_id = (

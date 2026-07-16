@@ -5,6 +5,7 @@ import pytest
 from dify_trace_langsmith.config import LangSmithConfig
 from dify_trace_langsmith.unified_trace import UnifiedLangSmithAdapter
 
+from core.ops.exceptions import InvalidTraceParentContextError
 from core.ops.unified_trace.entities import CanonicalSpan, CanonicalSpanKind, CanonicalSpanStatus, CanonicalTrace
 from core.ops.unified_trace.parent_context import ParentResolution, ProviderParentContext, destination_scope
 
@@ -37,6 +38,20 @@ def trace(*spans: CanonicalSpan, session_id: str = "session-1") -> CanonicalTrac
         session_id=session_id,
         root_span_id=values[0].id,
         spans=values,
+    )
+
+
+def test_client_disables_async_batching_before_parent_coordination(monkeypatch: pytest.MonkeyPatch):
+    client_class = MagicMock()
+    monkeypatch.setattr("dify_trace_langsmith.unified_trace.Client", client_class)
+    config = LangSmithConfig(api_key="secret", project="project-a", endpoint="https://smith.example")
+
+    UnifiedLangSmithAdapter(config)
+
+    client_class.assert_called_once_with(
+        api_key="secret",
+        api_url="https://smith.example",
+        auto_batch_tracing=False,
     )
 
 
@@ -107,6 +122,20 @@ def test_nested_workflow_restores_parent_trace_and_order(adapter):
     assert root["trace_id"] == parent.trace_id
     assert root["parent_run_id"] == parent.parent_id
     assert root["dotted_order"].startswith("parent.order.")
+
+
+def test_nested_workflow_rejects_parent_without_dotted_order(adapter):
+    subject, _ = adapter
+    parent = ProviderParentContext(
+        provider="langsmith",
+        scope=subject.scope,
+        trace_id="00000000-0000-0000-0000-000000000010",
+        parent_id="00000000-0000-0000-0000-000000000011",
+        provider_context={},
+    )
+
+    with pytest.raises(InvalidTraceParentContextError):
+        subject.emit(trace(), ParentResolution.restored(parent), MagicMock())
 
 
 def test_tool_context_is_published_only_after_create_run_succeeds(adapter):
