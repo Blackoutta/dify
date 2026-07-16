@@ -37,6 +37,7 @@ class CanonicalSpan(BaseModel):
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     synthetic: bool = False
+    can_parent_workflow: bool = False
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
