@@ -1290,11 +1290,11 @@ class OpsTraceConfig(BaseSettings):
         default=False,
     )
 
-    # Keep the retry window long enough for a parent workflow to finish and publish its context.
-    # Recommended: max_retries >= ceil(WORKFLOW_MAX_EXECUTION_TIME / delay_seconds).
+    # Include scheduling and export grace after the parent workflow's maximum execution time.
+    # Recommended: max_retries >= ceil((WORKFLOW_MAX_EXECUTION_TIME + grace_seconds) / delay_seconds).
     OPS_TRACE_RETRYABLE_DISPATCH_MAX_RETRIES: PositiveInt = Field(
         description="Maximum retry attempts for transient ops trace provider dispatch failures.",
-        default=240,
+        default=300,
     )
 
     OPS_TRACE_RETRYABLE_DISPATCH_DELAY_SECONDS: PositiveInt = Field(

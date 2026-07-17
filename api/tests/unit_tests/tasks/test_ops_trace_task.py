@@ -216,10 +216,10 @@ def test_process_trace_tasks_skips_enterprise_trace_when_retry_payload_was_alrea
     mock_incr.assert_not_called()
 
 
-def test_process_trace_tasks_default_retry_window_covers_max_workflow_execution_time():
+def test_process_trace_tasks_default_retry_window_covers_workflow_and_export_grace_period():
     assert (
         process_trace_tasks.max_retries * process_trace_tasks.default_retry_delay
-        >= dify_config.WORKFLOW_MAX_EXECUTION_TIME
+        >= dify_config.WORKFLOW_MAX_EXECUTION_TIME + 300
     )
 
 
