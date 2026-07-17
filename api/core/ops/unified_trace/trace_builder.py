@@ -177,6 +177,7 @@ class CanonicalTraceBuilder:
                 status=_status(trace_info.error),
                 error=trace_info.error or None,
                 metadata={**trace_info.metadata, "trace_entity_type": "message"},
+                publishes_parent_context=True,
             )
             workflow_parent_id: str | None = root_id
         else:
@@ -304,6 +305,7 @@ class CanonicalTraceBuilder:
         parent_id: str | None = None,
         span_id: str | None = None,
         session_id: str | None = None,
+        required_parent_context_id: str | None = None,
     ) -> CanonicalTrace:
         operation_id = span_id or str(uuid4())
         trace_id = trace_info.resolved_trace_id or parent_id or operation_id
@@ -325,6 +327,7 @@ class CanonicalTraceBuilder:
             session_id=session_id if session_id is not None else _single_session_id(trace_info),
             root_span_id=operation_id,
             spans=(span,),
+            required_parent_context_id=required_parent_context_id,
         )
 
     def _build_message(self, trace_info: MessageTraceInfo) -> CanonicalTrace | None:
@@ -358,6 +361,7 @@ class CanonicalTraceBuilder:
                 status=_status(message_error),
                 error=message_error,
                 metadata=metadata,
+                publishes_parent_context=True,
             ),
             CanonicalSpan(
                 id=f"{message_id}:llm",
@@ -437,4 +441,7 @@ class CanonicalTraceBuilder:
             kind=CanonicalSpanKind.TOOL,
             inputs=trace_info.inputs,
             outputs=trace_info.outputs,
+            parent_id=trace_info.message_id,
+            session_id=_single_session_id(trace_info) or trace_info.conversation_id or "",
+            required_parent_context_id=trace_info.message_id,
         )

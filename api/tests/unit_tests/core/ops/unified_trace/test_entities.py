@@ -28,5 +28,15 @@ def test_canonical_span_is_immutable():
         status=CanonicalSpanStatus.OK,
     )
 
+    assert span.publishes_parent_context is False
+
+    trace = CanonicalTrace(
+        trace_id="trace-1",
+        session_id="session-1",
+        root_span_id=span.id,
+        spans=(span,),
+    )
+    assert trace.required_parent_context_id is None
+
     with pytest.raises(ValidationError):
         span.name = "changed"

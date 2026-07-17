@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.ops.entities.trace_entity import MessageTraceInfo, WorkflowTraceInfo
+from core.ops.entities.trace_entity import GenerateNameTraceInfo, MessageTraceInfo, WorkflowTraceInfo
 from core.ops.unified_trace.entities import CanonicalSpanKind, CanonicalSpanStatus
 from core.ops.unified_trace.trace_builder import (
     CanonicalTraceBuilder,
@@ -141,6 +141,7 @@ def test_chatflow_message_uses_query_while_workflow_keeps_complete_inputs():
     spans = {span.id: span for span in trace.spans}
     assert spans["message-1"].inputs == "hi"
     assert spans["message-1"].metadata["trace_entity_type"] == "message"
+    assert spans["message-1"].publishes_parent_context is True
     assert spans["run-1"].inputs == CHATFLOW_INPUTS
 
 
@@ -368,7 +369,46 @@ def test_message_trace_does_not_load_workflow_executions():
     assert [span.name for span in trace.spans] == ["message", "llm"]
     assert trace.spans[0].outputs == "hello"
     assert trace.spans[0].metadata["trace_entity_type"] == "message"
+    assert trace.spans[0].publishes_parent_context is True
     assert trace.spans[1].parent_id == "message-1"
     assert trace.spans[1].kind is CanonicalSpanKind.LLM
     assert trace.spans[1].metadata["total_tokens"] == 5
     loader.assert_not_called()
+
+
+def test_generate_name_uses_message_parent_and_conversation_session():
+    builder = CanonicalTraceBuilder(lambda info: [])
+    info = GenerateNameTraceInfo(
+        tenant_id="tenant-1",
+        conversation_id="conversation-1",
+        message_id="message-1",
+        inputs="title prompt",
+        outputs="title",
+        metadata={},
+    )
+
+    trace = builder.build(info)
+
+    assert trace is not None
+    assert trace.trace_id == "message-1"
+    assert trace.session_id == "conversation-1"
+    assert trace.required_parent_context_id == "message-1"
+    assert trace.spans[0].parent_id == "message-1"
+
+
+def test_generate_name_without_message_remains_root_in_conversation_session():
+    builder = CanonicalTraceBuilder(lambda info: [])
+    info = GenerateNameTraceInfo(
+        tenant_id="tenant-1",
+        conversation_id="conversation-1",
+        inputs="title prompt",
+        outputs="title",
+        metadata={},
+    )
+
+    trace = builder.build(info)
+
+    assert trace is not None
+    assert trace.session_id == "conversation-1"
+    assert trace.required_parent_context_id is None
+    assert trace.spans[0].parent_id is None

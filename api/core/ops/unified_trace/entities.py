@@ -38,6 +38,7 @@ class CanonicalSpan(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     synthetic: bool = False
     can_parent_workflow: bool = False
+    publishes_parent_context: bool = False
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -50,5 +51,6 @@ class CanonicalTrace(BaseModel):
     root_span_id: str
     spans: tuple[CanonicalSpan, ...]
     external_parent: ParentTraceContext | None = None
+    required_parent_context_id: str | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
