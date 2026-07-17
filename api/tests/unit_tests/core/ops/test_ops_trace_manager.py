@@ -597,7 +597,11 @@ def test_trace_task_tool_trace(monkeypatch: pytest.MonkeyPatch, mock_db):
 
 
 def test_trace_task_generate_name_trace():
-    task = TraceTask(trace_type=TraceTaskName.GENERATE_NAME_TRACE, conversation_id="conv-id")
+    task = TraceTask(
+        trace_type=TraceTaskName.GENERATE_NAME_TRACE,
+        conversation_id="conv-id",
+        message_id="message-id",
+    )
     timer = {"start": 1, "end": 2}
     assert task.generate_name_trace("conv-id", timer, tenant_id=None) == {}
     result = task.generate_name_trace(
@@ -605,6 +609,7 @@ def test_trace_task_generate_name_trace():
     )
     assert result.outputs == "name"
     assert result.tenant_id == "tenant"
+    assert result.message_id == "message-id"
 
 
 def test_extract_streaming_metrics_invalid_json():

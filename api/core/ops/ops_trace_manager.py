@@ -1292,6 +1292,7 @@ class TraceTask:
 
         generate_name_trace_info = GenerateNameTraceInfo(
             trace_id=self.trace_id,
+            message_id=self.message_id,
             conversation_id=conversation_id,
             inputs=inputs,
             outputs=generate_conversation_name,
