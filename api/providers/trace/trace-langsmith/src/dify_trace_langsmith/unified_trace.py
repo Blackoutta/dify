@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from langsmith import Client
 
 from core.ops.exceptions import InvalidTraceParentContextError
-from core.ops.unified_trace.entities import CanonicalSpanKind, CanonicalSpanStatus, CanonicalTrace
+from core.ops.unified_trace.entities import CanonicalSpan, CanonicalSpanKind, CanonicalSpanStatus, CanonicalTrace
 from core.ops.unified_trace.parent_context import (
     ParentContextCoordinator,
     ParentResolution,
@@ -45,6 +45,12 @@ def _langsmith_value(value: Any, key: str) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
     return {key: value}
+
+
+def _langsmith_inputs(span: CanonicalSpan) -> dict[str, Any]:
+    if span.metadata.get("trace_entity_type") == "message" and isinstance(span.inputs, str):
+        return {"messages": [{"role": "user", "content": span.inputs}]}
+    return _langsmith_value(span.inputs, "input")
 
 
 class UnifiedLangSmithAdapter:
@@ -116,7 +122,7 @@ class UnifiedLangSmithAdapter:
             self._client.create_run(
                 id=provider_id,
                 name=canonical_span.name,
-                inputs=_langsmith_value(canonical_span.inputs, "input"),
+                inputs=_langsmith_inputs(canonical_span),
                 outputs=_langsmith_value(canonical_span.outputs, "output"),
                 run_type=_RUN_TYPE[canonical_span.kind],
                 start_time=canonical_span.start_time,

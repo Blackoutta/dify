@@ -77,6 +77,35 @@ def test_root_trace_id_equals_root_run_id_and_sets_thread_session(adapter):
     assert root["extra"]["metadata"]["external_trace_id"] == "customer-trace"
 
 
+def test_message_span_uses_explicit_langsmith_human_message_schema(adapter):
+    subject, client = adapter
+    message = span(
+        name="message",
+        inputs="hi",
+        metadata={"trace_entity_type": "message"},
+    )
+
+    subject.emit(trace(message), None, MagicMock())
+
+    assert client.create_run.call_args.kwargs["inputs"] == {
+        "messages": [{"role": "user", "content": "hi"}]
+    }
+
+
+def test_mapping_inputs_remain_unchanged(adapter):
+    subject, client = adapter
+    raw_inputs = {"sys.app_id": "app-1", "sys.files": []}
+    message = span(
+        name="message",
+        inputs=raw_inputs,
+        metadata={"trace_entity_type": "message"},
+    )
+
+    subject.emit(trace(message), None, MagicMock())
+
+    assert client.create_run.call_args.kwargs["inputs"] == raw_inputs
+
+
 def test_child_uses_actual_parent_run_and_dotted_order(adapter):
     subject, client = adapter
     root = span()
