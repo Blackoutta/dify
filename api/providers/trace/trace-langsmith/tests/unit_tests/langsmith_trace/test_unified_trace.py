@@ -87,9 +87,7 @@ def test_message_span_uses_explicit_langsmith_human_message_schema(adapter):
 
     subject.emit(trace(message), None, MagicMock())
 
-    assert client.create_run.call_args.kwargs["inputs"] == {
-        "messages": [{"role": "user", "content": "hi"}]
-    }
+    assert client.create_run.call_args.kwargs["inputs"] == {"messages": [{"role": "user", "content": "hi"}]}
 
 
 def test_mapping_inputs_remain_unchanged(adapter):

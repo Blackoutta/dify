@@ -237,9 +237,7 @@ def test_node_metadata_contains_compact_retry_summary_and_skips_malformed_entrie
         retry_attempt(2, error="attempt 2 timed out", elapsed_time=2.5),
         retry_attempt(3),
     ]
-    builder = CanonicalTraceBuilder(
-        lambda info: [node_execution(process_data={"__dify_retry_history": history})]
-    )
+    builder = CanonicalTraceBuilder(lambda info: [node_execution(process_data={"__dify_retry_history": history})])
 
     trace = builder.build(workflow_info())
 
