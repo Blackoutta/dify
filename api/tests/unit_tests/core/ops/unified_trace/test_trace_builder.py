@@ -213,6 +213,78 @@ def test_workflow_tool_is_marked_as_nested_workflow_parent():
     assert trace.spans[-1].can_parent_workflow is True
 
 
+def retry_attempt(retry_index: object, **overrides):
+    values = {
+        "retry_index": retry_index,
+        "inputs": {"attempt": retry_index},
+        "process_data": {"request": f"attempt-{retry_index}"},
+        "outputs": {"status_code": 500},
+        "error": f"attempt {retry_index} failed",
+        "elapsed_time": float(retry_index) if isinstance(retry_index, int) else 0.0,
+        "execution_metadata": {"internal": True},
+        "created_at": 1_700_000_000,
+        "finished_at": 1_700_000_001,
+    }
+    values.update(overrides)
+    return values
+
+
+def test_node_metadata_contains_compact_retry_summary_and_skips_malformed_entries():
+    history = [
+        retry_attempt(1),
+        "malformed",
+        retry_attempt(True),
+        retry_attempt(2, error="attempt 2 timed out", elapsed_time=2.5),
+        retry_attempt(3),
+    ]
+    builder = CanonicalTraceBuilder(
+        lambda info: [node_execution(process_data={"__dify_retry_history": history})]
+    )
+
+    trace = builder.build(workflow_info())
+
+    assert trace is not None
+    metadata = trace.spans[-1].metadata
+    assert metadata["retry_count"] == 3
+    assert metadata["retry_attempts"] == [
+        {
+            "retry_index": 1,
+            "error": "attempt 1 failed",
+            "elapsed_time": 1.0,
+            "created_at": 1_700_000_000,
+            "finished_at": 1_700_000_001,
+        },
+        {
+            "retry_index": 2,
+            "error": "attempt 2 timed out",
+            "elapsed_time": 2.5,
+            "created_at": 1_700_000_000,
+            "finished_at": 1_700_000_001,
+        },
+        {
+            "retry_index": 3,
+            "error": "attempt 3 failed",
+            "elapsed_time": 3.0,
+            "created_at": 1_700_000_000,
+            "finished_at": 1_700_000_001,
+        },
+    ]
+    assert all("inputs" not in attempt for attempt in metadata["retry_attempts"])
+    assert all("process_data" not in attempt for attempt in metadata["retry_attempts"])
+    assert all("outputs" not in attempt for attempt in metadata["retry_attempts"])
+    assert all("execution_metadata" not in attempt for attempt in metadata["retry_attempts"])
+
+
+def test_node_without_retry_history_has_no_retry_metadata():
+    builder = CanonicalTraceBuilder(lambda info: [node_execution()])
+
+    trace = builder.build(workflow_info())
+
+    assert trace is not None
+    assert "retry_count" not in trace.spans[-1].metadata
+    assert "retry_attempts" not in trace.spans[-1].metadata
+
+
 def test_failed_node_preserves_error_without_mutating_trace_metadata():
     metadata = {"app_id": "app-1", "custom": {"nested": True}}
     original = deepcopy(metadata)

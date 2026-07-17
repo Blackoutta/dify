@@ -12,6 +12,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 from sqlalchemy.orm import sessionmaker
 
+from core.app.workflow.retry_history import RETRY_HISTORY_PROCESS_DATA_KEY
 from core.helper.trace_id_helper import ParentTraceContext
 from core.ops.entities.trace_entity import (
     BaseTraceInfo,
@@ -65,6 +66,24 @@ _NODE_KIND: dict[str, CanonicalSpanKind] = {
     "tool": CanonicalSpanKind.TOOL,
     "agent": CanonicalSpanKind.AGENT,
 }
+_RETRY_SUMMARY_FIELDS = ("retry_index", "error", "elapsed_time", "created_at", "finished_at")
+
+
+def _retry_metadata(process_data: Mapping[str, Any]) -> dict[str, Any]:
+    raw_history = process_data.get(RETRY_HISTORY_PROCESS_DATA_KEY)
+    if not isinstance(raw_history, list):
+        return {}
+
+    attempts: list[dict[str, Any]] = []
+    for raw_attempt in raw_history:
+        if not isinstance(raw_attempt, Mapping):
+            continue
+        retry_index = raw_attempt.get("retry_index")
+        if isinstance(retry_index, bool) or not isinstance(retry_index, int) or retry_index <= 0:
+            continue
+        attempts.append({field: raw_attempt.get(field) for field in _RETRY_SUMMARY_FIELDS})
+
+    return {"retry_count": len(attempts), "retry_attempts": attempts} if attempts else {}
 
 
 def resolve_session_id(trace_info: WorkflowTraceInfo | MessageTraceInfo) -> str:
@@ -230,6 +249,7 @@ class CanonicalTraceBuilder:
                         "total_tokens": usage.get("total_tokens", 0),
                     }
                 )
+            metadata.update(_retry_metadata(process_data))
             title = getattr(item, "title", None)
             name = f"{node_type}_{title}" if isinstance(title, str) and title else node_type
             spans[item_execution_id] = CanonicalSpan(
