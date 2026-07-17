@@ -149,7 +149,7 @@ class UnifiedPhoenixAdapter:
             span_by_id[canonical_span.id] = span
             provider_parent_context: ProviderParentContext | None = None
             try:
-                if canonical_span.can_parent_workflow:
+                if canonical_span.can_parent_workflow or canonical_span.publishes_parent_context:
                     carrier: dict[str, str] = {}
                     self._propagator.inject(carrier, context=set_span_in_context(span))
                     provider_parent_context = ProviderParentContext(

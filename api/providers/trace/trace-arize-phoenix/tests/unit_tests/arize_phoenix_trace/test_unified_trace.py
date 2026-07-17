@@ -137,6 +137,19 @@ def test_emit_publishes_tool_context_after_span_export(adapter):
     assert events == ["end", "publish"]
 
 
+def test_emit_publishes_message_context(adapter):
+    subject, _, _ = adapter
+    subject._propagator.inject.side_effect = lambda carrier, context: carrier.update({"traceparent": VALID_TRACEPARENT})
+    publish = MagicMock()
+    message = span(id="message-1", name="message", publishes_parent_context=True)
+
+    subject.emit(trace(message), None, publish)
+
+    parent_id, context = publish.call_args.args
+    assert parent_id == "message-1"
+    assert context.provider_context == {"traceparent": VALID_TRACEPARENT}
+
+
 def test_emit_records_error_status(adapter):
     subject, _, otel_spans = adapter
     failed = span(status=CanonicalSpanStatus.ERROR, error="boom")

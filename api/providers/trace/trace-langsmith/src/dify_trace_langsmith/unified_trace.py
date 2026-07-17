@@ -112,7 +112,8 @@ class UnifiedLangSmithAdapter:
             dotted_order = generate_dotted_order(provider_id, canonical_span.start_time, parent_order)
             metadata = dict(canonical_span.metadata)
             if canonical_span.id == trace.root_span_id:
-                metadata["session_id"] = trace.session_id
+                if trace.session_id:
+                    metadata["session_id"] = trace.session_id
                 if trace.trace_id != trace_id:
                     metadata.setdefault("external_trace_id", trace.trace_id)
                 if parent and parent.kind is ParentResolutionKind.LINKED_ROOT and parent.linked_parent:
@@ -137,7 +138,7 @@ class UnifiedLangSmithAdapter:
             )
             dotted_order_by_canonical_id[canonical_span.id] = dotted_order
 
-            if canonical_span.can_parent_workflow:
+            if canonical_span.can_parent_workflow or canonical_span.publishes_parent_context:
                 publish_parent_context(
                     canonical_span.id,
                     ProviderParentContext(

@@ -104,6 +104,15 @@ def test_mapping_inputs_remain_unchanged(adapter):
     assert client.create_run.call_args.kwargs["inputs"] == raw_inputs
 
 
+def test_empty_session_is_not_written_to_root_metadata(adapter):
+    subject, client = adapter
+
+    subject.emit(trace(session_id=""), None, MagicMock())
+
+    metadata = client.create_run.call_args.kwargs["extra"]["metadata"]
+    assert "session_id" not in metadata
+
+
 def test_child_uses_actual_parent_run_and_dotted_order(adapter):
     subject, client = adapter
     root = span()
@@ -209,6 +218,20 @@ def test_retry_metadata_is_forwarded_to_langsmith(adapter):
         "session_id": "session-1",
         "external_trace_id": "customer-trace",
     }
+
+
+def test_message_context_is_published_after_create_run(adapter):
+    subject, client = adapter
+    publish = MagicMock()
+    message = span(name="message", publishes_parent_context=True)
+
+    subject.emit(trace(message), None, publish)
+
+    assert client.create_run.called
+    parent_id, context = publish.call_args.args
+    assert parent_id == ROOT_ID
+    assert context.parent_id == ROOT_ID
+    assert context.provider_context["dotted_order"]
 
 
 def test_scope_does_not_include_api_key(adapter):
