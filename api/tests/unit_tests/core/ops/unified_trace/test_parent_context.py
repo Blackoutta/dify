@@ -78,6 +78,37 @@ def test_resolve_returns_compatible_context():
     assert result.linked_parent is None
 
 
+def test_resolve_required_restores_message_context_without_destination_lookup():
+    redis = MagicMock()
+    redis.get.return_value = context().model_dump_json().encode()
+    resolve_destination = MagicMock()
+    subject = ParentContextCoordinator(redis, resolve_destination)
+
+    result = subject.resolve_required(
+        "message-1",
+        expected_provider="langsmith",
+        expected_scope="scope-a",
+    )
+
+    assert result.kind is ParentResolutionKind.RESTORED
+    assert result.context == context()
+    redis.get.assert_called_once_with("trace:unified:parent:message-1")
+    resolve_destination.assert_not_called()
+
+
+def test_missing_required_message_context_is_retryable():
+    redis = MagicMock()
+    redis.get.return_value = None
+    subject = coordinator(redis, None)
+
+    with pytest.raises(PendingTraceParentContextError):
+        subject.resolve_required(
+            "message-1",
+            expected_provider="langsmith",
+            expected_scope="scope-a",
+        )
+
+
 def test_missing_compatible_context_is_retryable():
     redis = MagicMock()
     redis.get.return_value = None

@@ -9,7 +9,7 @@ from core.ops.unified_trace.parent_context import ParentResolution
 from core.ops.unified_trace.provider import UnifiedTraceInstance
 
 
-def canonical_trace(*, nested: bool = False) -> CanonicalTrace:
+def canonical_trace(*, nested: bool = False, required_parent_context_id: str | None = None) -> CanonicalTrace:
     parent = (
         ParentTraceContext(parent_workflow_run_id="outer-run", parent_node_execution_id="outer-tool")
         if nested
@@ -20,6 +20,7 @@ def canonical_trace(*, nested: bool = False) -> CanonicalTrace:
         session_id="session-1",
         root_span_id="root-1",
         external_parent=parent,
+        required_parent_context_id=required_parent_context_id,
         spans=(
             CanonicalSpan(
                 id="root-1",
@@ -72,6 +73,22 @@ def test_runtime_resolves_nested_parent_before_emission():
         "expected_scope": "scope-a",
     }
     adapter.emit.assert_called_once()
+    assert adapter.emit.call_args.args[1] is resolution
+
+
+def test_runtime_resolves_required_message_parent_before_emission():
+    runtime, _, adapter, coordinator = make_runtime(canonical_trace(required_parent_context_id="message-1"))
+    resolution = ParentResolution.restored(MagicMock())
+    coordinator.resolve_required.return_value = resolution
+
+    runtime.trace(MagicMock())
+
+    coordinator.resolve_required.assert_called_once_with(
+        "message-1",
+        expected_provider="langsmith",
+        expected_scope="scope-a",
+    )
+    coordinator.resolve.assert_not_called()
     assert adapter.emit.call_args.args[1] is resolution
 
 

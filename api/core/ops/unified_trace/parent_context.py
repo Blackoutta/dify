@@ -194,26 +194,57 @@ class ParentContextCoordinator:
         if not parent_node_execution_id:
             raise InvalidTraceParentContextError("Nested workflow parent context has no node execution ID")
 
+        return ParentResolution.restored(
+            self._restore(
+                parent_node_execution_id,
+                expected_provider=expected_provider,
+                expected_scope=expected_scope,
+            )
+        )
+
+    def resolve_required(
+        self,
+        parent_context_id: str,
+        *,
+        expected_provider: str,
+        expected_scope: str,
+    ) -> ParentResolution:
+        """Restore a parent context that must exist for an asynchronous child."""
+        return ParentResolution.restored(
+            self._restore(
+                parent_context_id,
+                expected_provider=expected_provider,
+                expected_scope=expected_scope,
+            )
+        )
+
+    def _restore(
+        self,
+        parent_context_id: str,
+        *,
+        expected_provider: str,
+        expected_scope: str,
+    ) -> ProviderParentContext:
         try:
-            raw_context = self._store.get(self._key(parent_node_execution_id))
+            raw_context = self._store.get(self._key(parent_context_id))
         except Exception as error:
             raise TraceParentContextAccessError(
-                f"Could not read unified parent context for node_execution_id={parent_node_execution_id}"
+                f"Could not read unified parent context for parent_context_id={parent_context_id}"
             ) from error
 
         if raw_context is None:
-            raise PendingTraceParentContextError(parent_node_execution_id)
+            raise PendingTraceParentContextError(parent_context_id)
 
         try:
             context = ProviderParentContext.model_validate_json(raw_context)
         except (ValidationError, ValueError, TypeError) as error:
             raise InvalidTraceParentContextError(
-                f"Invalid unified parent context for node_execution_id={parent_node_execution_id}"
+                f"Invalid unified parent context for parent_context_id={parent_context_id}"
             ) from error
 
         if context.provider != expected_provider or context.scope != expected_scope:
             raise InvalidTraceParentContextError(
                 "Stored unified parent context does not match the expected provider destination: "
-                f"node_execution_id={parent_node_execution_id}"
+                f"parent_context_id={parent_context_id}"
             )
-        return ParentResolution.restored(context)
+        return context

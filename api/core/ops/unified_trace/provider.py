@@ -64,5 +64,11 @@ class UnifiedTraceInstance(BaseTraceInstance):
                 expected_provider=self._adapter.provider_name,
                 expected_scope=self._adapter.scope,
             )
+        elif canonical_trace.required_parent_context_id is not None:
+            parent_resolution = self._coordinator.resolve_required(
+                canonical_trace.required_parent_context_id,
+                expected_provider=self._adapter.provider_name,
+                expected_scope=self._adapter.scope,
+            )
 
         self._adapter.emit(canonical_trace, parent_resolution, self._coordinator.publish)
