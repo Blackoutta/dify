@@ -153,7 +153,7 @@ class CanonicalTraceBuilder:
                 kind=CanonicalSpanKind.CHAIN,
                 start_time=_started_at(trace_info.start_time or workflow_start),
                 end_time=trace_info.end_time or workflow_end,
-                inputs=dict(trace_info.workflow_run_inputs),
+                inputs=trace_info.query or dict(trace_info.workflow_run_inputs),
                 outputs=dict(trace_info.workflow_run_outputs),
                 status=_status(trace_info.error),
                 error=trace_info.error or None,
@@ -318,6 +318,7 @@ class CanonicalTraceBuilder:
         message_error = trace_info.error or getattr(message, "error", None)
         metadata = {
             **trace_info.metadata,
+            "trace_entity_type": "message",
             "model_provider": getattr(message, "model_provider", None),
             "model_name": getattr(message, "model_id", None),
             "prompt_tokens": trace_info.message_tokens,

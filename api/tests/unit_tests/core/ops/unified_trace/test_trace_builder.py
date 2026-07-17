@@ -115,6 +115,60 @@ def workflow_info(**overrides) -> WorkflowTraceInfo:
     return make_workflow_trace_info(**values)
 
 
+CHATFLOW_INPUTS = {
+    "sys.app_id": "19a6d372-b8bc-4ad4-9b83-7e6e7138de31",
+    "sys.dialogue_count": 1,
+    "sys.files": [],
+    "sys.query": "hi",
+    "sys.user_id": "ca877a63-4d75-4ba3-a417-3edffe5e545c",
+    "sys.workflow_id": "8b81be9e-d7c1-4fa7-b90f-03791fa015ba",
+    "sys.workflow_run_id": "4eec02ea-4ed5-47cc-87fd-7c3821dd935d",
+}
+
+
+def test_chatflow_message_uses_query_while_workflow_keeps_complete_inputs():
+    builder = CanonicalTraceBuilder(lambda info: [])
+
+    trace = builder.build(
+        workflow_info(
+            message_id="message-1",
+            query="hi",
+            workflow_run_inputs=CHATFLOW_INPUTS,
+        )
+    )
+
+    assert trace is not None
+    spans = {span.id: span for span in trace.spans}
+    assert spans["message-1"].inputs == "hi"
+    assert spans["message-1"].metadata["trace_entity_type"] == "message"
+    assert spans["run-1"].inputs == CHATFLOW_INPUTS
+
+
+def test_chatflow_message_falls_back_to_complete_inputs_for_empty_query():
+    builder = CanonicalTraceBuilder(lambda info: [])
+
+    trace = builder.build(
+        workflow_info(
+            message_id="message-1",
+            query="",
+            workflow_run_inputs=CHATFLOW_INPUTS,
+        )
+    )
+
+    assert trace is not None
+    assert trace.spans[0].inputs == CHATFLOW_INPUTS
+
+
+def test_workflow_without_message_keeps_complete_inputs_on_root():
+    builder = CanonicalTraceBuilder(lambda info: [])
+
+    trace = builder.build(workflow_info(query="hi", workflow_run_inputs=CHATFLOW_INPUTS))
+
+    assert trace is not None
+    assert trace.root_span_id == "run-1"
+    assert trace.spans[0].inputs == CHATFLOW_INPUTS
+
+
 def test_build_workflow_trace_is_parent_first_and_uses_wrappers():
     container = node_execution(id="iteration-exec", node_id="iteration", node_type="iteration", title="Items")
     child = node_execution(
@@ -243,6 +297,7 @@ def test_message_trace_does_not_load_workflow_executions():
     assert trace.root_span_id == "message-1"
     assert [span.name for span in trace.spans] == ["message", "llm"]
     assert trace.spans[0].outputs == "hello"
+    assert trace.spans[0].metadata["trace_entity_type"] == "message"
     assert trace.spans[1].parent_id == "message-1"
     assert trace.spans[1].kind is CanonicalSpanKind.LLM
     assert trace.spans[1].metadata["total_tokens"] == 5
