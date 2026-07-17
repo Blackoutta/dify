@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -145,6 +146,27 @@ def test_emit_records_error_status(adapter):
     status = otel_spans[0].set_status.call_args.args[0]
     assert status.status_code is StatusCode.ERROR
     otel_spans[0].record_exception.assert_called_once()
+
+
+def test_retry_metadata_is_serialized_for_phoenix(adapter):
+    subject, tracer, _ = adapter
+    retry_metadata = {
+        "retry_count": 1,
+        "retry_attempts": [
+            {
+                "retry_index": 1,
+                "error": "HTTP 500",
+                "elapsed_time": 1.2,
+                "created_at": 1_700_000_000,
+                "finished_at": 1_700_000_001,
+            }
+        ],
+    }
+
+    subject.emit(trace(span(metadata=retry_metadata)), None, MagicMock())
+
+    attributes = tracer.start_span.call_args.kwargs["attributes"]
+    assert json.loads(attributes[SpanAttributes.METADATA]) == retry_metadata
 
 
 def test_scope_does_not_include_api_key(adapter):

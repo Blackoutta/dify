@@ -188,6 +188,31 @@ def test_tool_context_is_published_only_after_create_run_succeeds(adapter):
     publish.assert_not_called()
 
 
+def test_retry_metadata_is_forwarded_to_langsmith(adapter):
+    subject, client = adapter
+    retry_metadata = {
+        "retry_count": 1,
+        "retry_attempts": [
+            {
+                "retry_index": 1,
+                "error": "HTTP 500",
+                "elapsed_time": 1.2,
+                "created_at": 1_700_000_000,
+                "finished_at": 1_700_000_001,
+            }
+        ],
+    }
+    node = span(metadata=retry_metadata)
+
+    subject.emit(trace(node), None, MagicMock())
+
+    assert client.create_run.call_args.kwargs["extra"]["metadata"] == {
+        **retry_metadata,
+        "session_id": "session-1",
+        "external_trace_id": "customer-trace",
+    }
+
+
 def test_scope_does_not_include_api_key(adapter):
     subject, _ = adapter
 
