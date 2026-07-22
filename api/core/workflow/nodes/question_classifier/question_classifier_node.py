@@ -79,6 +79,10 @@ class QuestionClassifierNode(Node[QuestionClassifierNodeData]):
     def version(cls):
         return "1"
 
+    @property
+    def retry(self) -> bool:
+        return self.node_data.retry_config.retry_enabled
+
     def _run(self):
         node_data = self.node_data
         variable_pool = self.graph_runtime_state.variable_pool
