@@ -168,7 +168,7 @@ class CanonicalTraceBuilder:
             spans[root_id] = CanonicalSpan(
                 id=root_id,
                 parent_id=None,
-                name="message",
+                name=f"chatflow_{trace_info.workflow_run_id}",
                 kind=CanonicalSpanKind.CHAIN,
                 start_time=_started_at(trace_info.start_time or workflow_start),
                 end_time=trace_info.end_time or workflow_end,
